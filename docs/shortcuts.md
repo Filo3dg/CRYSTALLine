@@ -63,6 +63,7 @@ only in editing mode.
 | Display settings | the Display panel |
 | Panels | show one panel |
 | Restore all panels | put every panel back |
+| Along a/b/c axis, Along a\*/b\*/c\* | the same as the **VIEW** chips |
 
 ## Plot
 
@@ -78,7 +79,7 @@ The entries are enabled when the output contains the corresponding data; see
 
 | Group | What |
 | --- | --- |
-| **VIEW** | look down **a**, **b** or **c**; fit everything back in view |
+| **VIEW** | look down **a**, **b** or **c**, or down **a\***, **b\*** or **c\*** (the bc, ca or ab face square-on); fit everything back in view |
 | **ROTATE** | turn the scene by a fixed step (15° by default, set beside it) |
 | **CONV. CELL** | crystallographic cell on, primitive cell off |
 

@@ -89,6 +89,13 @@ CHIP_ICON = QSize(22, 16)
 CHIP_SIZE = QSize(40, 26)
 
 
+def theme_axis_colour(axis: int) -> str:
+    """The toolbar colour of lattice axis 0, 1 or 2 (a red, b green, c blue)."""
+    from crystalline.ui import theme
+
+    return theme.AXIS_COLOURS[axis]
+
+
 def style_chip(button, kind: str, axis: str = "") -> None:
     """Give a toolbar button its shape: one size and one icon size, everywhere."""
     button.setProperty("chip", kind)
@@ -425,6 +432,15 @@ def _build_view_menu(window) -> None:
         )
         view_menu.addAction(action)
         window._axis_actions.append(action)
+    # Down the reciprocal axes, as in VESTA: a* is normal to b and c, so the bc
+    # face is seen square-on however far a leans from it.
+    for label, axis in (("Along a*", 0), ("Along b*", 1), ("Along c*", 2)):
+        action = QAction(label, window)
+        action.triggered.connect(
+            lambda _checked=False, a=axis: window.viewport.align_view_along(a, reciprocal=True)
+        )
+        view_menu.addAction(action)
+        window._axis_actions.append(action)
 
 
 # ── Plot ──────────────────────────────────────────────────────────────────
@@ -616,6 +632,26 @@ def _build_toolbars(window) -> None:
         button.setToolTip(f"Look down the {label} axis")
         style_chip(button, "axis", label)
         button.clicked.connect(lambda _checked=False, a=axis: window.viewport.align_view_along(a))
+        view_toolbar.addWidget(button)
+        window._axis_buttons.append(button)
+
+    # The same three down a*, b*, c*, as VESTA has them: outlined in the axis
+    # colour rather than filled, so they read as the a/b/c chips' reciprocal
+    # partners and the row does not become six loud blocks.
+    view_toolbar.addWidget(_toolbar_spacer(4))
+    for label, axis, colour in (("a", 0, theme_axis_colour(0)),
+                                ("b", 1, theme_axis_colour(1)),
+                                ("c", 2, theme_axis_colour(2))):
+        button = QToolButton(window)
+        button.setIcon(axis_icon(f"{label}*", "", colour, window.font()))
+        button.setToolTip(
+            f"Look down {label}* — normal to the "
+            f"{'bc' if axis == 0 else 'ca' if axis == 1 else 'ab'} plane, seen square-on"
+        )
+        style_chip(button, "axis-reciprocal", label)
+        button.clicked.connect(
+            lambda _checked=False, a=axis: window.viewport.align_view_along(a, reciprocal=True)
+        )
         view_toolbar.addWidget(button)
         window._axis_buttons.append(button)
 

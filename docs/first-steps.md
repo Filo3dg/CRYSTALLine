@@ -57,10 +57,14 @@ The structure is rotated by dragging, zoomed with the scroll wheel and
 translated by dragging with the middle button (or with {kbd}`Shift` held down).
 
 The toolbar contains three groups: **VIEW**, which orients the structure along
-the **a**, **b** or **c** axis and returns it to a view of the whole;
-**ROTATE**, which turns it by a fixed step, 15° unless changed in the adjacent
-box; and **CONV. CELL**, which switches between the crystallographic and the
-primitive cell.
+the **a**, **b** or **c** axis or, as in VESTA, along **a\***, **b\*** or
+**c\*** — the normal to the bc, ca or ab plane, which shows that face of the
+cell square-on — and returns it to a view of the whole; **ROTATE**, which turns
+it by a fixed step, 15° unless changed in the adjacent box; and **CONV. CELL**,
+which switches between the crystallographic and the primitive cell. In an
+orthogonal cell a and a\* coincide; in a monoclinic or triclinic one, looking
+down a shows the bc face foreshortened and looking down a\* shows it at its true
+shape. For a slab, **c\*** looks straight down onto the layer.
 
 **View → Appearance** selects the light or dark interface, or follows the
 system setting.
