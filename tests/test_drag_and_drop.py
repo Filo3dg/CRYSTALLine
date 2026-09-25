@@ -68,7 +68,7 @@ def _window():
         dragMoveEvent = MainWindow.dragMoveEvent
         dropEvent = MainWindow.dropEvent
         _handle_drop = MainWindow._handle_drop
-        _dropped_file = MainWindow._dropped_file
+        _dropped_files = MainWindow._dropped_files
         _dropped_paths = staticmethod(MainWindow._dropped_paths)
 
         def __init__(self):
@@ -128,7 +128,7 @@ def test_dragging_a_usable_file_is_accepted_and_says_what_it_would_do(qapp):
     assert event.isAccepted()
     title, detail = window._drop_hint.shown
     assert title == "Open run.out"
-    assert "replaces" in detail
+    assert detail == "in a new tab"          # every file opens in a tab of its own
 
     event = _enter(["/tmp/fragment.xyz"])
     window.dragEnterEvent(event)
@@ -202,19 +202,45 @@ def test_an_xyz_is_imported_rather_than_opened(qapp):
     assert window.opened == []
 
 
-def test_dropping_several_files_opens_one_and_says_so(qapp):
-    """Opening is a replacement, so opening four in a row would leave three of
-    them having flashed past. Silently ignoring them is worse than saying so:
-    a multiple selection dragged in one gesture looks like it should all
-    arrive."""
+def test_dropping_several_files_opens_every_one_and_says_what_was_left(qapp):
+    """Each file opens in a tab of its own, so a multiple selection dragged in
+    one gesture all arrives. What cannot be opened is said, not silently
+    dropped."""
     window = _window()
+
+    event = _enter(["/tmp/holiday.png", "/tmp/run.out", "/tmp/other.cif"])
+    window.dragEnterEvent(event)
+    assert window._drop_hint.shown == ("Open 2 files", "each in a new tab")
 
     window.dropEvent(_drop(["/tmp/holiday.png", "/tmp/run.out", "/tmp/other.cif"]))
     qapp.processEvents()
 
-    assert window.opened == ["/tmp/run.out"]      # the first usable one
+    assert window.opened == ["/tmp/run.out", "/tmp/other.cif"]
     assert len(window.messages) == 1
-    assert "2 other dropped files ignored" in window.messages[0]
+    assert "Opened 2 files — 1 other dropped file ignored" in window.messages[0]
+
+
+def test_atoms_are_not_imported_into_a_structure_about_to_be_replaced(qapp):
+    """Opening files changes the structure on screen; atoms dropped alongside
+    them would land in whichever that turned out to be."""
+    window = _window()
+
+    window.dropEvent(_drop(["/tmp/fragment.xyz", "/tmp/run.out"]))
+    qapp.processEvents()
+
+    assert window.opened == ["/tmp/run.out"]
+    assert window.imported == []
+    assert "1 other dropped file ignored" in window.messages[0]
+
+
+def test_only_the_first_of_several_imports_is_taken(qapp):
+    window = _window()
+
+    window.dropEvent(_drop(["/tmp/a.xyz", "/tmp/b.xyz"]))
+    qapp.processEvents()
+
+    assert window.imported == ["/tmp/a.xyz"]
+    assert "Imported a.xyz — 1 other dropped file ignored" in window.messages[0]
 
 
 def test_a_single_file_is_opened_without_comment(qapp):

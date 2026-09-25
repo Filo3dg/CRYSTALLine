@@ -51,6 +51,13 @@ class _StubWindow(QMainWindow):
     _restore_all_panels = MainWindow._restore_all_panels
     _show_display_panel = MainWindow._show_display_panel
 
+    # The View menu also steps between file tabs; there are none here.
+    def _next_tab(self) -> None:
+        pass
+
+    def _previous_tab(self) -> None:
+        pass
+
 
 def _window(qapp):
     window = _StubWindow()

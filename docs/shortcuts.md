@@ -16,7 +16,8 @@
 
 | | |
 | --- | --- |
-| Open… | {kbd}`Ctrl+O` |
+| Open… | {kbd}`Ctrl+O` — each file in a tab of its own |
+| Close tab | {kbd}`Ctrl+W` |
 | Import atoms into structure… | |
 | Save structure as .gui… | |
 | Save structure as .cif… | |
@@ -63,6 +64,10 @@ only in editing mode.
 | Display settings | the Display panel |
 | Panels | show one panel |
 | Restore all panels | put every panel back |
+| Next tab / Previous tab | {kbd}`Ctrl+Tab` / {kbd}`Ctrl+Shift+Tab` |
+
+On macOS the shortcuts use {kbd}`⌘` for {kbd}`Ctrl`; the tabs are stepped
+through with {kbd}`⌘⇧]` and {kbd}`⌘⇧[`.
 
 ## Plot
 

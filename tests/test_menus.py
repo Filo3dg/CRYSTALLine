@@ -280,9 +280,10 @@ def test_viewport_nudge_vector_moves_in_the_camera_screen_plane(qapp):
 
 
 def test_connect_signals_only_uses_attributes_that_exist_by_then():
-    """``__init__`` calls ``_connect_signals()`` before ``menus.build_menus()``,
-    so anything the menus create (``_edit_mode_action`` and friends) is not there
-    yet — connecting to it would blow up at startup, where no test can reach it."""
+    """``__init__`` opens the first tab — which wires its signals with
+    ``_connect_tab_signals()`` — before ``menus.build_menus()``, so anything the
+    menus create (``_edit_mode_action`` and friends) is not there yet —
+    connecting to it would blow up at startup, where no test can reach it."""
     from crystalline.ui.main_window import MainWindow
 
     tree = ast.parse(Path(inspect.getsourcefile(MainWindow)).read_text())
@@ -290,7 +291,7 @@ def test_connect_signals_only_uses_attributes_that_exist_by_then():
     methods = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)}
     init = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "__init__")
 
-    # Walk __init__ in order, stopping at the _connect_signals() call.
+    # Walk __init__ in order, stopping where the first tab is opened.
     assigned = set()
     for statement in init.body:
         calls = [
@@ -298,7 +299,7 @@ def test_connect_signals_only_uses_attributes_that_exist_by_then():
             for n in ast.walk(statement)
             if isinstance(n, ast.Call)
             and isinstance(n.func, ast.Attribute)
-            and n.func.attr == "_connect_signals"
+            and n.func.attr == "_add_tab"
         ]
         if calls:
             break
@@ -309,7 +310,8 @@ def test_connect_signals_only_uses_attributes_that_exist_by_then():
                     if isinstance(target, ast.Attribute) and getattr(target.value, "id", None) == "self":
                         assigned.add(target.attr)
 
-    connect = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_connect_signals")
+    connect = next(n for n in cls.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "_connect_tab_signals")
     used = {
         node.attr
         for node in ast.walk(connect)
@@ -317,7 +319,7 @@ def test_connect_signals_only_uses_attributes_that_exist_by_then():
     }
     missing = sorted(used - assigned - methods)
     assert not missing, (
-        "_connect_signals uses attributes not yet assigned when it runs: "
+        "_connect_tab_signals uses attributes not yet assigned when it runs: "
         f"{missing} — connect them after menus.build_menus(), or go through a method"
     )
 

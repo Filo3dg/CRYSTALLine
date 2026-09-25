@@ -366,6 +366,10 @@ class PlotPanel(QWidget):
         self._tabs.setCurrentIndex(index)
         self._stack.setCurrentWidget(self._tabs)
 
+    def count(self) -> int:
+        """How many plots are open."""
+        return self._tabs.count()
+
     def clear(self) -> None:
         """Close every plot, releasing its figure.
 

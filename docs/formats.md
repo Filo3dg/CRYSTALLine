@@ -8,14 +8,16 @@
 | CRYSTAL `.gui` / `.f34` | structure and symmetry |
 | `.cif` | structure |
 
-These files may also be opened by dropping them on the window.
+These files may also be opened by dropping them on the window. Each file opens
+in a tab of its own; see [Several files at once](first-steps.md#several-files-at-once).
 
 ## Import into the current structure
 
 **File → Import atoms into structure…** reads `.xyz`, `.pdb` and `.cif` files
 and adds their atoms to the structure already loaded, without replacing it. A
 file dropped on a window which already contains a structure is imported in the
-same way.
+same way, into the tab on screen — unless it is dropped together with files that
+open tabs of their own, in which case it is left out.
 
 ## Data files read for the plots
 

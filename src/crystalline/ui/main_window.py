@@ -1,4 +1,4 @@
-"""Main application window: viewport in the centre, dockable panels around it.
+"""Main application window: a tab per open file in the centre, panels around it.
 
 Wiring lives here and nowhere else — panels and the viewport expose signals,
 and ``MainWindow`` connects them. Adding a new property (DOS, bands, elastic)
@@ -8,6 +8,7 @@ is: build a panel, dock it, connect its signals here.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from typing import Optional
 
 import numpy as np
@@ -27,6 +28,9 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSpinBox,
+    QStackedWidget,
+    QTabBar,
+    QTabWidget,
     QWidget,
 )
 
@@ -48,6 +52,15 @@ from crystalline.core.undo import UndoHistory
 _HARTREE_TO_EV = 27.211386245988
 from crystalline.viz.phonon_animator import PhononAnimator
 from crystalline.ui import menus
+from crystalline.ui.file_tabs import (
+    PER_TAB_PANELS,
+    UNTITLED,
+    FileTab,
+    openable,
+    route_to_active_tab,
+    tab_labels,
+    window_title,
+)
 from crystalline.ui.viewport import Viewport
 from crystalline.ui.safety import guard
 from crystalline.ui.widgets import BusyOverlay, DropHint, Worker
@@ -58,6 +71,8 @@ from crystalline.ui.panels.display_settings import DisplayPanel
 from crystalline.ui.panels.geometry_panel import GeometryPanel
 from crystalline.ui.panels.symmetry_panel import SymmetryPanel
 from crystalline.ui.panels.plot_view import PlotPanel
+
+_APPLICATION_TITLE = "CRYSTALLine — CRYSTAL structure & phonon viewer"
 
 # Geometry of the floating Plots window on the first plot: a fraction of the main
 # window's width (never below the minimum), 4:3, inset from its lower-right corner.
@@ -82,49 +97,32 @@ _MAX_SUPERCELL_REPEAT = 99
 _SLOW_SUPERCELL_ATOMS = 20_000
 
 
+@route_to_active_tab
 class MainWindow(QMainWindow):
+    """The window: one tab per open file, docks around the tab shown.
+
+    Each tab (:class:`~crystalline.ui.file_tabs.FileTab`) holds a file's state
+    and its own 3D view and panels; the per-file names below — ``structure``,
+    ``_source``, ``viewport``, ``phonon_panel`` and the rest listed in
+    :data:`~crystalline.ui.file_tabs.PER_TAB` — are properties that reach the
+    tab on screen, so everything here acts on the file being looked at.
+    """
+
     def __init__(self, structure: Optional[Structure] = None) -> None:
         super().__init__()
-        self.setWindowTitle("CRYSTALLine — CRYSTAL structure & phonon viewer")
+        self.setWindowTitle(_APPLICATION_TITLE)
         from crystalline.resources import logo_path
 
         self.setWindowIcon(QIcon(logo_path()))
         self.resize(1200, 800)
 
-        # The structure as loaded (CRYSTAL's primitive cell) is the pristine
-        # source; ``self.structure`` is the cell view derived from it and shown.
-        # By default we show the crystallographic (conventional) cell.
-        self._source = structure if structure is not None else Structure.empty()
-        self._cell_view = CellView.CRYSTALLOGRAPHIC
-        self._supercell = (1, 1, 1)
-        self._show_boundary = True  # show partially-belonging molecules by default
+        # Shared by every tab.
+        self._tab: Optional[FileTab] = None
+        self._tabs: list = []
+        # Set while the window itself moves between tabs, so the Plots window
+        # being hidden or shown on the way is not taken for the user's doing.
+        self._switching_tabs = False
         self._editing = False
-        self._modes: Optional[PhononModes] = None
-        # Every q-point the run sampled (``[Gamma]`` for a plain FREQCALC, one
-        # entry per commensurate q for a SCELPHONO run) and which of them
-        # ``self._modes`` currently holds — the panel offers the choice, the
-        # window rebuilds the view around it.
-        self._qmodes: list = []
-        self._qindex = 0
-        # Supercell to restore when the phonon panel's Untile is pressed, or
-        # ``None`` when the tiling on screen is the user's own doing.
-        self._tile_restore: Optional[tuple] = None
-        self._adps: Optional[ADPSet] = None  # thermal ellipsoids, if the run has them
-        # source-atom index of each displayed atom, so a per-atom quantity can be
-        # laid onto the (expanded, tiled, boundary-completed) cell on screen.
-        self._adp_index: Optional[np.ndarray] = None
-        # Undo history for structure edits (snapshots of the shown cell). A view
-        # change (supercell/boundary/lattice/load) re-derives from source and
-        # resets it — those aren't part of the per-edit undo timeline.
-        self._history = UndoHistory()
-        self._suppress_undo = False
-        self._output_path: Optional[str] = None  # last-loaded CRYSTAL .out, for plots
-        self._output_props: dict = {}  # parsed CRYSTAL-output rows for the Info panel
-        # The orbital currently shown, if any: what it takes to rebuild it when
-        # the displayed cell changes (a supercell is how you see more of one).
-        self._orbital: Optional[dict] = None
-        # Whether a scalar field (density, spin density, potential) is drawn.
-        self._density_shown = False
         # Workers in flight. Held because a dropped one is collected mid-run and
         # takes its QThread down with it.
         self._workers: list = []
@@ -133,71 +131,58 @@ class MainWindow(QMainWindow):
         # reopening one starts from the last accepted settings, not the defaults.
         self._plot_dialog_state: dict = {}
         self._axis_actions: list = []  # a/b/c view-alignment actions (menu + toolbar)
-        (self.structure, _, self._unit_cell, self._bond_structure,
-         self._adp_index) = self._compose_view(self._cell_view, self._supercell, None)
 
-        # right dock: phonon modes (built before the viewport listener, which
-        # references it). Animator drives the renderer.
-        self.viewport = Viewport(self)
-        self.animator = PhononAnimator(self.viewport.renderer)
-        self.phonon_panel = PhononPanel(self.animator, self)
+        # centre: one page per open file, each its own 3D view. Movable, so
+        # files can be put side by side in the bar; closable, one at a time.
+        self._file_tabs = QTabWidget(self)
+        self._file_tabs.setDocumentMode(True)
+        self._file_tabs.setTabsClosable(True)
+        self._file_tabs.setMovable(True)
+        self._file_tabs.setElideMode(Qt.ElideMiddle)  # keep both ends of a long run name
+        self._file_tabs.setUsesScrollButtons(True)
+        self.setCentralWidget(self._file_tabs)
 
-        # centre: 3D viewport
-        self.setCentralWidget(self.viewport)
-        self.viewport.show_structure(
-            self.structure, reference_cell=self._unit_cell, bond_structure=self._bond_structure
+        # The panels of every tab live in the docks, in a stack per dock that
+        # shows the current tab's.
+        self._panel_stacks = {name: QStackedWidget(self) for name in PER_TAB_PANELS}
+        self._phonon_dock = self._dock(
+            "Phonons", self._panel_stacks["phonon_panel"], Qt.RightDockWidgetArea
         )
-        self.structure.add_listener(self._on_structure_changed)
-
-        # The Structure panel is kept as the selection/edit model (it owns the
-        # shared selection and backs the Edit-menu tools) but is no longer shown
-        # as a dock — 3D picking/drag and the Edit menu drive editing instead.
-        self.structure_panel = StructurePanel(self.structure, self)
-        self.structure_panel.hide()
-        self._phonon_dock = self._dock("Phonons", self.phonon_panel, Qt.RightDockWidgetArea)
 
         # left dock: crystallographic info of the loaded system
-        self.info_panel = InfoPanel(self)
-        info_dock = self._info_dock = self._dock("Info", self.info_panel, Qt.LeftDockWidgetArea)
-        # Which cell the panel describes — the one computed, or pymatgen's
-        # standard one — is remembered between sessions, and it is also where
-        # the input builder starts.
-        from crystalline.ui import preferences
-
-        self.info_panel.set_cell_choice(preferences.cell_choice())
-        self.info_panel.cell_choice_changed.connect(preferences.set_cell_choice)
-        self.info_panel.show_structure(self._analysis_cell())
+        info_dock = self._info_dock = self._dock(
+            "Info", self._panel_stacks["info_panel"], Qt.LeftDockWidgetArea
+        )
 
         # left dock (tabbed behind Info): live display settings.
-        self.display_panel = DisplayPanel(
-            self.viewport.renderer.settings, self._apply_render_settings, self
+        self._display_dock = self._dock(
+            "Display", self._panel_stacks["display_panel"], Qt.LeftDockWidgetArea
         )
-        self._display_dock = self._dock("Display", self.display_panel, Qt.LeftDockWidgetArea)
         self.tabifyDockWidget(info_dock, self._display_dock)
 
         # left dock (tabbed alongside): measurements + atom tools for the selection.
-        self.geometry_panel = GeometryPanel(self.structure, self)
-        self._geometry_dock = self._dock("Geometry", self.geometry_panel, Qt.LeftDockWidgetArea)
+        self._geometry_dock = self._dock(
+            "Geometry", self._panel_stacks["geometry_panel"], Qt.LeftDockWidgetArea
+        )
         self.tabifyDockWidget(info_dock, self._geometry_dock)
 
         info_dock.raise_()  # show Info on top by default
-        self.display_panel.set_elements(self.structure.numbers)  # initial element swatches
 
         # right dock, tabbed with Phonons: the structure's point-symmetry elements.
         # Hidden until Cell ▸ Point symmetry analysis asks for it — it is an
         # analysis someone goes looking for, not something every session needs on
         # screen (and the search itself only runs once the panel is opened).
-        self.symmetry_panel = SymmetryPanel(self._analysis_cell(), self)
         self._symmetry_dock = self._dock(
-            "Point symmetry", self.symmetry_panel, Qt.RightDockWidgetArea
+            "Point symmetry", self._panel_stacks["symmetry_panel"], Qt.RightDockWidgetArea
         )
         self.tabifyDockWidget(self._phonon_dock, self._symmetry_dock)
         self._symmetry_dock.hide()
 
         # bottom dock: property plots (IR/Raman/bands/DOS…), one tab each.
         # Hidden until the first plot is built so it doesn't take up space.
-        self.plot_panel = PlotPanel(self)
-        self._plot_dock = self._dock("Plots", self.plot_panel, Qt.BottomDockWidgetArea)
+        self._plot_dock = self._dock(
+            "Plots", self._panel_stacks["plot_panel"], Qt.BottomDockWidgetArea
+        )
         # The Plots window is the exception to the fixed layout. A figure is
         # looked at beside the structure, moved around, and shut when it has been
         # read — so it can be closed and dragged, and it is *not* allowed to dock:
@@ -212,6 +197,7 @@ class MainWindow(QMainWindow):
         self._plot_dock.setTitleBarWidget(None)  # it keeps its own bar, and its ×
         self._plot_dock.hide()
         self._plot_dock_floated = False  # floated once, on the first plot built
+        self._plot_dock.visibilityChanged.connect(self._on_plot_dock_visibility)
 
         # Bottom-right status indicators. Order matters: permanent widgets stack
         # left-to-right in call order, so counts sit left of the editing badge.
@@ -230,15 +216,23 @@ class MainWindow(QMainWindow):
         self._editing_status.hide()
 
         self._settle_docks()
+        # After _settle_docks, which pins every tab bar it finds: this one is
+        # the user's to reorder and to close tabs from.
+        self._file_tabs.tabBar().setMovable(True)
+        self._file_tabs.tabBar().setTabsClosable(True)
+        self._file_tabs.currentChanged.connect(self._on_file_tab_changed)
+        self._file_tabs.tabCloseRequested.connect(self._close_tab_at)
         # Long work shows this rather than a wait cursor, and runs off the main
         # thread so it can actually animate — see crystalline.ui.widgets.busy.
         self._busy = BusyOverlay(self)
         # Drag-and-drop: the window takes the drop, the hint sits over the 3D
-        # view — the part of the window a file is aimed at.
+        # views — the part of the window a file is aimed at.
         self.setAcceptDrops(True)
-        self._drop_hint = DropHint(self.viewport)
+        self._drop_hint = DropHint(self._file_tabs)
 
-        self._connect_signals()
+        # The first tab: the structure handed in, or an empty one that the first
+        # file opened takes over.
+        self._add_tab(structure)
         # The theme is painted on the application before this window exists, so
         # the change that normally carries the 3D ground along with it has
         # already happened by the time there is a viewport to carry it to:
@@ -247,14 +241,329 @@ class MainWindow(QMainWindow):
         self._follow_theme_background()
         menus.build_menus(self)
         self._reset_undo()
+        self._refresh_chrome()  # menus, toolbar and status bar, for the tab on screen
+
+    # ── file tabs ───────────────────────────────────────────────────────
+    def _create_tab(self, structure: Optional[Structure] = None,
+                    settings=None) -> FileTab:
+        """A new tab holding ``structure`` (or nothing), its widgets built and wired.
+
+        Built *as* the current tab — the window's per-file names reach whatever
+        ``self._tab`` is — and handed back without being shown; the caller adds
+        it to the bar and switches to it. ``settings`` are the display settings
+        it starts from: the tab open when it was made, so a new file comes up
+        looking like the last one, and each goes its own way from there.
+        """
+        tab = FileTab()
+        previous = self._tab
+        self._tab = tab
+        try:
+            # The structure as loaded (CRYSTAL's primitive cell) is the pristine
+            # source; ``self.structure`` is the cell view derived from it and
+            # shown. By default we show the crystallographic (conventional) cell.
+            self._source = structure if structure is not None else Structure.empty()
+            self._cell_view = CellView.CRYSTALLOGRAPHIC
+            self._supercell = (1, 1, 1)
+            self._show_boundary = True  # show partially-belonging molecules by default
+            self._modes = None
+            # Every q-point the run sampled (``[Gamma]`` for a plain FREQCALC,
+            # one entry per commensurate q for a SCELPHONO run) and which of
+            # them ``self._modes`` currently holds — the panel offers the
+            # choice, the window rebuilds the view around it.
+            self._qmodes = []
+            self._qindex = 0
+            # Supercell to restore when the phonon panel's Untile is pressed, or
+            # ``None`` when the tiling on screen is the user's own doing.
+            self._tile_restore = None
+            self._adps = None  # thermal ellipsoids, if the run has them
+            # Undo history for structure edits (snapshots of the shown cell). A
+            # view change (supercell/boundary/lattice/load) re-derives from
+            # source and resets it — those aren't part of the per-edit timeline.
+            self._history = UndoHistory()
+            self._suppress_undo = False
+            self._output_path = None  # the loaded CRYSTAL .out, for plots
+            self._output_props = {}  # parsed CRYSTAL-output rows for the Info panel
+            # The orbital currently shown, if any: what it takes to rebuild it
+            # when the displayed cell changes (a supercell shows more of one).
+            self._orbital = None
+            # Whether a scalar field (density, spin density, potential) is drawn.
+            self._density_shown = False
+            # ``_adp_index`` is the source atom each displayed atom is an image
+            # of, so a per-atom quantity (the ADP tensors) can be laid onto the
+            # expanded, tiled, boundary-completed cell on screen.
+            (self.structure, _, self._unit_cell, self._bond_structure,
+             self._adp_index) = self._compose_view(self._cell_view, self._supercell, None)
+
+            # The 3D view (the tab's page) and the phonon panel driving it.
+            self.viewport = Viewport(self._file_tabs)
+            if settings is not None:
+                self.viewport.renderer.set_settings(settings)
+            self.animator = PhononAnimator(self.viewport.renderer)
+            self.phonon_panel = PhononPanel(self.animator, self)
+            self.viewport.show_structure(
+                self.structure, reference_cell=self._unit_cell,
+                bond_structure=self._bond_structure,
+            )
+            self.structure.add_listener(self._routed(tab, self._on_structure_changed))
+
+            # The Structure panel is kept as the selection/edit model (it owns
+            # the shared selection and backs the Edit-menu tools) but is not
+            # shown — 3D picking/drag and the Edit menu drive editing instead.
+            self.structure_panel = StructurePanel(self.structure, self)
+            self.structure_panel.hide()
+
+            # Which cell the Info panel describes — the one computed, or
+            # pymatgen's standard one — is remembered between sessions, and it is
+            # also where the input builder starts.
+            from crystalline.ui import preferences
+
+            self.info_panel = InfoPanel(self)
+            self.info_panel.set_cell_choice(preferences.cell_choice())
+            self.info_panel.cell_choice_changed.connect(self._on_cell_choice_changed)
+            self.info_panel.show_structure(self._analysis_cell())
+
+            self.display_panel = DisplayPanel(
+                self.viewport.renderer.settings,
+                self._routed(tab, self._apply_render_settings), self,
+            )
+            self.display_panel.set_elements(self.structure.numbers)  # element swatches
+            self.geometry_panel = GeometryPanel(self.structure, self)
+            self.symmetry_panel = SymmetryPanel(self._analysis_cell(), self)
+            self.plot_panel = PlotPanel(self)
+            self._connect_tab_signals(tab)
+            for name, stack in self._panel_stacks.items():
+                stack.addWidget(getattr(tab, name))
+        finally:
+            self._tab = previous
+        return tab
+
+    def _add_tab(self, structure: Optional[Structure] = None) -> FileTab:
+        """Open a new tab (holding ``structure``, or empty) and switch to it."""
+        settings = None if self._tab is None else self.viewport.renderer.settings
+        tab = self._create_tab(structure, settings)
+        self._tabs.append(tab)
+        index = self._file_tabs.addTab(tab.viewport, UNTITLED)
+        self._update_tab_labels()
+        if self._file_tabs.currentIndex() != index:
+            self._file_tabs.setCurrentIndex(index)  # -> _on_file_tab_changed
+        if self._tab is not tab:
+            self._activate_tab(tab)  # the first tab: Qt made it current on adding
+        if settings is None:
+            self._follow_theme_background()  # a fresh ground matches the theme
+        return tab
+
+    def _tab_for_page(self, widget) -> Optional[FileTab]:
+        for tab in self._tabs:
+            if tab.viewport is widget:
+                return tab
+        return None
+
+    def _on_file_tab_changed(self, index: int) -> None:
+        tab = self._tab_for_page(self._file_tabs.widget(index)) if index >= 0 else None
+        if tab is not None:
+            self._activate_tab(tab)
+
+    def _activate_tab(self, tab: FileTab) -> None:
+        """Show ``tab``: its view, its panels, and the menus and status bar for it."""
+        old = self._tab
+        if old is not None and old is not tab and old in self._tabs:
+            # A mode left playing in a tab nobody can see is work for nothing,
+            # and would be found still running on the way back.
+            old.phonon_panel.stop()
+        self._tab = tab
+        if self._file_tabs.currentWidget() is not tab.viewport:
+            blocked = self._file_tabs.blockSignals(True)
+            self._file_tabs.setCurrentWidget(tab.viewport)
+            self._file_tabs.blockSignals(blocked)
+        for name, stack in self._panel_stacks.items():
+            stack.setCurrentWidget(getattr(tab, name))
+        # Editing is a mode of the window, not of a file: the tab arrived at
+        # follows it.
+        self.viewport.set_editing_enabled(self._editing)
+        self.structure_panel.set_editing_enabled(self._editing)
+        self.geometry_panel.set_editing_enabled(self._editing)
+        # Each tab's plots come and go with it.
+        self._switching_tabs = True
+        try:
+            if tab.plots_open and tab.plot_panel.count() > 0:
+                self._plot_dock.show()
+            elif self._plot_dock.isVisible():
+                self._plot_dock.hide()
+        finally:
+            self._switching_tabs = False
+        self._refresh_chrome()
+
+    def _take_tab_for_file(self) -> FileTab:
+        """The tab a file being opened goes into: this one if it is empty, else a new one."""
+        if self._tab is not None and self._tab.is_blank():
+            return self._tab
+        return self._add_tab()
+
+    def _close_tab_at(self, index: int) -> None:
+        tab = self._tab_for_page(self._file_tabs.widget(index))
+        if tab is not None:
+            self._close_tab(tab)
+
+    def _close_current_tab(self) -> None:
+        if self._tab is not None:
+            self._close_tab(self._tab)
+
+    def _close_tab(self, tab: FileTab) -> None:
+        """Close ``tab`` and let its file go; an empty tab takes the last one's place."""
+        if self._workers:
+            # Something is being built for a tab — possibly this one — and its
+            # result is on its way to that tab's widgets.
+            self.statusBar().showMessage("Wait for the current task to finish.", 4000)
+            return
+        if len(self._tabs) == 1 and tab.is_blank():
+            return  # nothing to close: the window always has a tab
+        tab.phonon_panel.stop()
+        tab.plot_panel.clear()  # releases the figures, and their pick handlers
+        self._tabs.remove(tab)
+        index = self._file_tabs.indexOf(tab.viewport)
+        if index >= 0:
+            self._file_tabs.removeTab(index)  # -> the neighbour becomes current
+        for name, stack in self._panel_stacks.items():
+            stack.removeWidget(getattr(tab, name))
+        try:
+            tab.viewport.interactor.close()  # releases the VTK render window
+        except Exception:  # noqa: BLE001 - it is going away either way
+            pass
+        for widget in tab.widgets():
+            if hasattr(widget, "deleteLater"):
+                widget.deleteLater()
+        if not self._tabs:
+            self._tab = None
+            self._add_tab()
+        self._update_tab_labels()
+
+    def _next_tab(self) -> None:
+        self._step_tab(+1)
+
+    def _previous_tab(self) -> None:
+        self._step_tab(-1)
+
+    def _step_tab(self, step: int) -> None:
+        count = self._file_tabs.count()
+        if count > 1 and not self._workers:
+            self._file_tabs.setCurrentIndex((self._file_tabs.currentIndex() + step) % count)
+
+    def _update_tab_labels(self) -> None:
+        """Name every tab after its file — with the folder, where two share a name."""
+        labels = tab_labels([tab.path for tab in self._tabs])
+        # The window always keeps a tab, so the empty one it is left with has
+        # nothing to close: no × on it that would do nothing.
+        lone_blank = len(self._tabs) == 1 and self._tabs[0].is_blank()
+        bar = self._file_tabs.tabBar()
+        for tab, label in zip(self._tabs, labels):
+            tab.label = label
+            index = self._file_tabs.indexOf(tab.viewport)
+            if index >= 0:
+                self._file_tabs.setTabText(index, label)
+                self._file_tabs.setTabToolTip(index, tab.path or "No file open")
+                for side in (QTabBar.LeftSide, QTabBar.RightSide):  # left on macOS
+                    button = bar.tabButton(index, side)
+                    if button is not None:
+                        button.setVisible(not lone_blank)
+        self._update_window_title()
+
+    def _update_window_title(self) -> None:
+        """``run.out — CRYSTALLine``: the file on screen, named as its tab is."""
+        tab = self._tab
+        name = tab.label if tab is not None and tab.path else None
+        self.setWindowTitle(window_title(name, _APPLICATION_TITLE))
+
+    def _routed(self, tab: FileTab, slot):
+        """``slot``, run against ``tab`` whichever tab is on screen when it fires.
+
+        Almost everything a tab's widgets emit comes from the user working in
+        the tab on screen. What does not — a display change applied after a
+        short delay, the camera settling after a wheel zoom — belongs to the tab
+        it came from all the same, not to whichever one has been switched to in
+        between; and nothing at all is done for a tab that has been closed.
+        """
+        def call(*args):
+            if tab is self._tab:
+                return slot(*args)
+            if tab not in self._tabs:
+                return None
+            with self._acting_on(tab):
+                result = slot(*args)
+            self._refresh_chrome()  # the menus are the tab on screen's, again
+            return result
+
+        return call
+
+    @contextmanager
+    def _acting_on(self, tab: FileTab):
+        """Point the window's per-file names at ``tab`` for the duration."""
+        previous = self._tab
+        self._tab = tab
+        try:
+            yield tab
+        finally:
+            self._tab = previous
+
+    def _refresh_chrome(self) -> None:
+        """Set the menus, the toolbar and the status bar to the tab on screen."""
+        if self._tab is None:
+            return
+        self._update_window_title()
+        self._update_undo_action()
+        self._update_view_actions()  # a/b/c alignment, and the cell-view controls
+        boundary = getattr(self, "_boundary_action", None)
+        if boundary is not None:
+            blocked = boundary.blockSignals(True)
+            boundary.setChecked(self._show_boundary)
+            boundary.blockSignals(blocked)
+        self._update_supercell_action()
+        if getattr(self, "_plot_actions", None) is not None:
+            self._update_plot_actions()
+        self._update_orbital_actions()
+        self._update_density_actions()
+        self._update_spectra_action()
+        self._update_vci_action()
+        self._update_anscan_action()
+        self._update_pes_action()
+        self._update_import_action()
         self._update_export_actions()
+        if getattr(self, "_edit_tool_actions", None) is not None:
+            self._update_edit_actions()
         self._update_status()
-        self._update_import_action()  # match the (possibly non-empty) initial structure
+
+    def _capability(self, key: str, probe):
+        """What the open output offers, probed once per tab and file.
+
+        Keyed by the output as well: a tab's file can change — an empty tab
+        takes over the first file opened — and what was found for the one
+        before must not answer for the next.
+        """
+        cache = self._tab.capabilities
+        entry = (key, self._output_path)
+        if entry not in cache:
+            cache[entry] = probe()
+        return cache[entry]
+
+    def _on_cell_choice_changed(self, choice: str) -> None:
+        """One Cell choice for every tab's Info panel, remembered for next time."""
+        from crystalline.ui import preferences
+
+        preferences.set_cell_choice(choice)
+        for tab in self._tabs:
+            if tab is not self._tab:
+                tab.info_panel.set_cell_choice(choice)
+
+    def _on_plot_dock_visibility(self, visible: bool) -> None:
+        """The user opening or shutting the Plots window, for the tab on screen."""
+        if not self._switching_tabs and self._tab is not None:
+            self._tab.plots_open = bool(visible)
 
     # ── wiring ──────────────────────────────────────────────────────────
     def _on_structure_changed(self, s: Structure) -> None:
         """Model edited: record undo, redraw, and reconcile a running animation."""
         self._capture_undo(s)
+        if len(self._tabs) == 1:
+            self._update_tab_labels()  # atoms built in the empty tab make it closable
         self._update_status()  # atom count may have changed (add/remove)
         self._update_import_action()  # importing needs a non-empty structure
         self._refresh_info()  # symmetry/point group may have changed with the edit
@@ -321,50 +630,59 @@ class MainWindow(QMainWindow):
         if redo is not None:
             redo.setEnabled(self._history.can_redo())
 
-    def _connect_signals(self) -> None:
+    def _connect_tab_signals(self, tab: FileTab) -> None:
+        """Wire one tab's view and panels: to each other, and to the window.
+
+        What a tab's widgets ask of the window goes through :meth:`_routed`, so
+        it is done to *that* tab even if it arrives once another is on screen.
+        """
+        on = lambda slot: self._routed(tab, slot)  # noqa: E731
+        viewport, selection = tab.viewport, tab.structure_panel
+        phonons, geometry = tab.phonon_panel, tab.geometry_panel
         # viewport pick -> update selection (additive with Ctrl/Shift)
-        self.viewport.atom_picked.connect(self.structure_panel.select_atom)
+        viewport.atom_picked.connect(selection.select_atom)
         # dragging an atom in 3D -> update selection (keep a group drag intact)
-        self.viewport.atom_moved.connect(self._on_atom_moved)
+        viewport.atom_moved.connect(on(self._on_atom_moved))
         # clicking empty space in the 3D view -> clear the panel selection
-        self.viewport.selection_cleared.connect(self.structure_panel.clear_selection)
+        viewport.selection_cleared.connect(selection.clear_selection)
         # Del/Backspace over the 3D view -> delete the selection (the menu's Del
         # shortcut can't fire while the VTK widget holds keyboard focus)
-        self.viewport.delete_requested.connect(self._delete_selected)
+        viewport.delete_requested.connect(on(self._delete_selected))
         # arrow keys over the 3D view (editing mode) -> nudge the selection
-        self.viewport.nudge_requested.connect(self._nudge_selection)
+        viewport.nudge_requested.connect(on(self._nudge_selection))
         # starting to drag an atom -> stop any running phonon animation
-        self.viewport.interaction_started.connect(self.phonon_panel.stop)
+        viewport.interaction_started.connect(phonons.stop)
         # moving the camera -> suspend the animation for the duration, so the
         # drag gets the whole event loop and the view keeps up with the pointer
-        self.viewport.camera_busy.connect(self.phonon_panel.hold)
+        viewport.camera_busy.connect(phonons.hold)
         # the panel owns the selection -> highlight it + refresh the Edit menu
-        self.structure_panel.selection_changed.connect(self._on_selection_changed)
+        selection.selection_changed.connect(on(self._on_selection_changed))
         # a phonon mode was (de)selected -> refresh the animation-export action
-        self.phonon_panel.mode_selected.connect(lambda _row: self._update_export_actions())
+        phonons.mode_selected.connect(on(lambda _row: self._update_export_actions()))
         # another q-point was picked -> show that q's modes on a rebuilt view
-        self.phonon_panel.qpoint_selected.connect(self._set_qpoint)
+        phonons.qpoint_selected.connect(on(self._set_qpoint))
         # "Tile n×n×n" next to the q-point -> the supercell one period needs
-        self.phonon_panel.tile_requested.connect(self._tile_to_qpoint)
+        phonons.tile_requested.connect(on(self._tile_to_qpoint))
 
         # Geometry panel: the same edit operations as the Edit menu (so undo and
         # the selection model behave identically), plus measurement overlays.
-        self.geometry_panel.editing_toggled.connect(self._toggle_editing)
-        self.geometry_panel.delete_requested.connect(self._delete_selected)
-        self.geometry_panel.duplicate_requested.connect(self._duplicate_selected)
-        self.geometry_panel.translate_requested.connect(self._translate_selected)
-        self.geometry_panel.set_element_requested.connect(self._set_element_of_selection)
-        self.geometry_panel.set_position_requested.connect(self._set_position_of_selection)
-        self.geometry_panel.add_atom_requested.connect(self._add_atom)
-        self.geometry_panel.annotations_changed.connect(self.viewport.set_annotations)
+        geometry.editing_toggled.connect(on(self._toggle_editing))
+        geometry.delete_requested.connect(on(self._delete_selected))
+        geometry.duplicate_requested.connect(on(self._duplicate_selected))
+        geometry.translate_requested.connect(on(self._translate_selected))
+        geometry.set_element_requested.connect(on(self._set_element_of_selection))
+        geometry.set_position_requested.connect(on(self._set_position_of_selection))
+        geometry.add_atom_requested.connect(on(self._add_atom))
+        geometry.annotations_changed.connect(viewport.set_annotations)
         # Lattice planes (hkl), indices in the conventional cell; "Select atoms"
         # on a plane goes through the shared selection like a pick would.
-        self.geometry_panel.lattice_planes_changed.connect(self.viewport.set_lattice_planes)
-        self.geometry_panel.select_atoms_requested.connect(self.structure_panel.set_selection)
-        self.geometry_panel.set_miller_cell(self._miller_cell())
+        geometry.lattice_planes_changed.connect(viewport.set_lattice_planes)
+        geometry.select_atoms_requested.connect(selection.set_selection)
+        with self._acting_on(tab):
+            geometry.set_miller_cell(self._miller_cell())
         # Symmetry panel: the ticked elements are drawn over the structure.
-        self.symmetry_panel.elements_changed.connect(self.viewport.set_symmetry_elements)
-        self.symmetry_panel.reduction_changed.connect(self._apply_symmetry_reduction)
+        tab.symmetry_panel.elements_changed.connect(viewport.set_symmetry_elements)
+        tab.symmetry_panel.reduction_changed.connect(on(self._apply_symmetry_reduction))
 
     def _analysis_cell(self) -> Structure:
         """The shown structure folded back into one clean unit cell, edits included.
@@ -499,14 +817,13 @@ class MainWindow(QMainWindow):
 
         refresh_history_icons(self)
         refresh_appearance_button(self)
-        for panel, method in (
-            (getattr(self, "phonon_panel", None), "refresh_theme_icons"),
-            (getattr(self, "geometry_panel", None), "refresh_theme_icons"),
-        ):
-            refresh = getattr(panel, method, None)
-            if callable(refresh):
-                refresh()
-        self._follow_theme_background()
+        for tab in getattr(self, "_tabs", []):
+            for panel in (tab.phonon_panel, tab.geometry_panel):
+                refresh = getattr(panel, "refresh_theme_icons", None)
+                if callable(refresh):
+                    refresh()
+            with self._acting_on(tab):
+                self._follow_theme_background()
 
     def _follow_theme_background(self) -> None:
         """Move the 3D ground to match the app theme — unless it is the user's.
@@ -557,7 +874,8 @@ class MainWindow(QMainWindow):
         """
         from crystalline.crystalio import output_availability
 
-        available = output_availability(self._output_path)
+        path = self._output_path
+        available = self._capability("plots", lambda: output_availability(path))
         for kind in self._plot_kinds:
             enabled = True if kind.source == "data" else (kind.key in available)
             self._plot_actions[kind.key].setEnabled(enabled)
@@ -892,7 +1210,8 @@ class MainWindow(QMainWindow):
 
         action = getattr(self, "_anscan_action", None)
         if action is not None:
-            action.setEnabled(has_anscan(self._output_path))
+            path = self._output_path
+            action.setEnabled(self._capability("anscan", lambda: has_anscan(path)))
 
     # ── anharmonic PES ──────────────────────────────────────────────────
     def _open_pes(self) -> None:
@@ -950,7 +1269,8 @@ class MainWindow(QMainWindow):
 
         action = getattr(self, "_pes_action", None)
         if action is not None:
-            action.setEnabled(has_pes(self._output_path))
+            path = self._output_path
+            action.setEnabled(self._capability("pes", lambda: has_pes(path)))
 
     # ── plot typography ─────────────────────────────────────────────────
     def _open_orbitals(self) -> None:
@@ -1107,11 +1427,16 @@ class MainWindow(QMainWindow):
         self._busy.start(message)
         worker = Worker(work)
         self._workers.append(worker)  # held: a dropped worker takes its thread down
+        # The result goes to the widgets of the tab on screen now: that tab has
+        # to still be the one on screen when it arrives.
+        self._file_tabs.tabBar().setEnabled(False)
 
         def cleanup() -> None:
             self._busy.stop()
             if worker in self._workers:
                 self._workers.remove(worker)
+            if not self._workers:
+                self._file_tabs.tabBar().setEnabled(True)
 
         def on_failed(exc) -> None:
             cleanup()
@@ -1302,8 +1627,9 @@ class MainWindow(QMainWindow):
 
         action = getattr(self, "_orbitals_action", None)
         if action is not None:
-            available = bool(
-                self._output_path and molden.find_orbital_files(self._output_path)
+            path = self._output_path
+            available = self._capability(
+                "orbitals", lambda: bool(path and molden.find_orbital_files(path))
             )
             action.setEnabled(available)
             action.setToolTip(
@@ -1348,7 +1674,8 @@ class MainWindow(QMainWindow):
 
         action = getattr(self, "_vci_action", None)
         if action is not None:
-            action.setEnabled(has_vci(self._output_path))
+            path = self._output_path
+            action.setEnabled(self._capability("vci", lambda: has_vci(path)))
 
     # ── spectrum ↔ mode linking ─────────────────────────────────────────
     def _select_mode_near(self, frequency: float) -> None:
@@ -1389,6 +1716,9 @@ class MainWindow(QMainWindow):
         window that snaps back into the frame every time it nears an edge cannot
         be placed. The float happens once, not on every plot.
         """
+        tab = getattr(self, "_tab", None)
+        if tab is not None:
+            tab.plots_open = True  # this file's plots are open: bring them back with it
         if not self._plot_dock_floated:
             self._plot_dock_floated = True
             self._plot_dock.setFloating(True)
@@ -1801,15 +2131,19 @@ class MainWindow(QMainWindow):
     def _set_supercell(self, reps) -> None:
         """Record the supercell tiling and keep the menu action's label in step."""
         self._supercell = tuple(reps)
+        self._update_supercell_action()
+        panel = getattr(self, "phonon_panel", None)
+        if panel is not None:
+            # ...and what its Untile would go back to, if it did the tiling.
+            panel.set_supercell(self._supercell, self._tile_restore)
+
+    def _update_supercell_action(self) -> None:
+        """Name the tiling on screen in the Cell menu's Supercell entry."""
         action = getattr(self, "_supercell_action", None)
         if action is not None:
             na, nb, nc = self._supercell
             suffix = "" if self._supercell == (1, 1, 1) else f"  ({na}×{nb}×{nc})"
             action.setText(f"Supercell…{suffix}")
-        panel = getattr(self, "phonon_panel", None)
-        if panel is not None:
-            # ...and what its Untile would go back to, if it did the tiling.
-            panel.set_supercell(self._supercell, self._tile_restore)
 
     # ── phonon q-points (a SCELPHONO run samples more than Gamma) ────────
     def _set_qmodes(self, qmodes) -> None:
@@ -1887,29 +2221,32 @@ class MainWindow(QMainWindow):
     # ── drag and drop ───────────────────────────────────────────────────
     @guard()
     def dragEnterEvent(self, event) -> None:
-        """Accept a dragged file the app can do something with, and say what.
+        """Accept dragged files the app can do something with, and say what.
 
-        Only the *first* usable file is considered. Opening is a replacement, so
-        opening four files in a row would leave three of them having flashed
-        past; and the hint has to name one thing, not four.
+        Every structure among them opens, each in a tab of its own; atoms to
+        import are added to the structure on screen when nothing is being
+        opened alongside them.
         """
-        path, action = self._dropped_file(event)
-        if action is None:
+        to_open, to_import = self._dropped_files(event)
+        if not to_open and not to_import:
             event.ignore()
             return
         event.acceptProposedAction()
-        self._drop_hint.show_hint(
-            f"Open {os.path.basename(path)}" if action == "open"
-            else f"Add the atoms in {os.path.basename(path)}",
-            "replaces the structure on screen" if action == "open"
-            else "appends to the current structure — undoable",
-        )
+        if len(to_open) > 1:
+            self._drop_hint.show_hint(f"Open {len(to_open)} files", "each in a new tab")
+        elif to_open:
+            self._drop_hint.show_hint(f"Open {os.path.basename(to_open[0])}", "in a new tab")
+        else:
+            self._drop_hint.show_hint(
+                f"Add the atoms in {os.path.basename(to_import[0])}",
+                "appends to the current structure — undoable",
+            )
 
     @guard()
     def dragMoveEvent(self, event) -> None:
         # Qt asks again on every move; without this the drop is refused whatever
         # dragEnterEvent said.
-        if self._dropped_file(event)[1] is None:
+        if not any(self._dropped_files(event)):
             event.ignore()
         else:
             event.acceptProposedAction()
@@ -1932,36 +2269,42 @@ class MainWindow(QMainWindow):
         a large output takes to parse.
         """
         self._drop_hint.hide_hint()
-        path, action = self._dropped_file(event)
-        if action is None:
+        to_open, to_import = self._dropped_files(event)
+        if not to_open and not to_import:
             event.ignore()
             return
         event.acceptProposedAction()
-        ignored = [p for p in self._dropped_paths(event) if p != path]
-        QTimer.singleShot(0, lambda: self._handle_drop(path, action, ignored))
+        ignored = len(self._dropped_paths(event)) - len(to_open) - len(to_import)
+        QTimer.singleShot(0, lambda: self._handle_drop(to_open, to_import, ignored))
 
-    def _handle_drop(self, path: str, action: str, ignored: list) -> None:
-        """Open or import a dropped file, once the drag itself is over."""
-        done = self._load_path(path) if action == "open" else self._import_path(path)
+    def _handle_drop(self, to_open: list, to_import: list, ignored: int) -> None:
+        """Open or import the dropped files, once the drag itself is over.
+
+        Every structure dropped opens, each in its own tab. Atoms to import go
+        into the structure on screen, and only the first of them — see
+        :func:`~crystalline.ui.file_tabs.openable`.
+        """
+        done = [path for path in to_open if self._load_path(path)]
+        if not to_open:
+            done = [path for path in to_import if self._import_path(path)]
         if done and ignored:
             # Said rather than silently dropped: a multiple selection dragged in
             # one gesture looks like it should all arrive.
-            verb = "Opened" if action == "open" else "Imported"
+            verb = "Opened" if to_open else "Imported"
+            what = (os.path.basename(done[0]) if len(done) == 1
+                    else f"{len(done)} files")
             self.statusBar().showMessage(
-                f"{verb} {os.path.basename(path)} — {len(ignored)} other dropped "
-                f"file{'' if len(ignored) == 1 else 's'} ignored",
+                f"{verb} {what} — {ignored} other dropped "
+                f"file{'' if ignored == 1 else 's'} ignored",
                 8000,
             )
 
-    def _dropped_file(self, event):
-        """The first usable dropped file as ``(path, action)``; ``(None, None)`` if none."""
+    def _dropped_files(self, event):
+        """``(to_open, to_import)``: the dropped files the window will act on."""
         from crystalline.crystalio import file_action
 
-        for path in self._dropped_paths(event):
-            action = file_action(path)
-            if action is not None:
-                return path, action
-        return None, None
+        to_open, to_import, _ignored = openable(self._dropped_paths(event), file_action)
+        return to_open, to_import
 
     @staticmethod
     def _dropped_paths(event) -> list:
@@ -1976,33 +2319,45 @@ class MainWindow(QMainWindow):
 
     # ── file actions ────────────────────────────────────────────────────
     def _open_file(self) -> None:
-        """Single open: loads geometry, and phonon modes too if the file has them."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open structure file", "",
+        """Open one or more files, each in a tab of its own.
+
+        Geometry, and phonon modes too where the file has them.
+        """
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Open structure files", self._open_folder(),
             "Structure files (*.out *.gui *.f34 *.cif);;CRYSTAL files (*.out *.gui *.f34);;"
             "CIF files (*.cif);;All files (*)",
         )
-        if not path:
-            return
-        self._load_path(path)
+        for path in paths:
+            self._load_path(path)
+
+    def _open_folder(self) -> str:
+        """Where the Open dialog starts: beside the file on screen, if there is one."""
+        path = self._tab.path if self._tab is not None else None
+        return os.path.dirname(path) if path else ""
 
     def _load_path(self, path: str) -> bool:
-        """Open ``path``, replacing everything on screen. False if it wouldn't read.
+        """Open ``path`` in a tab of its own. False if it wouldn't read.
+
+        The file goes into the tab on screen if that one is empty — the window
+        opens on an empty tab, and the first file takes it over — and into a new
+        tab otherwise; a file that will not read opens no tab at all.
 
         Split out of :meth:`_open_file` so a file arriving any other way — dropped
         on the window — goes through exactly the same sequence. There is a lot of
-        it, and a second copy would drift: the plots and the orbital of the
-        previous file both have to be let go, the supercell and the tiling reset,
-        and eight menu sections re-enabled against what this file turns out to
-        contain.
+        it, and a second copy would drift: whatever the tab showed before has to
+        be let go, the supercell and the tiling reset, and eight menu sections
+        re-enabled against what this file turns out to contain.
         """
         try:
             from crystalline.crystalio import load
 
             result = load(path)
         except Exception as exc:  # noqa: BLE001 - surface any parse error to the user
-            QMessageBox.critical(self, "Load failed", str(exc))
+            QMessageBox.critical(self, "Load failed", f"{os.path.basename(path)}:\n{exc}")
             return False
+        tab = self._take_tab_for_file()
+        tab.path = path
         # The previous file's plots belong to the previous file: their figures
         # stay live otherwise, and a spectrum's peak-pick handler would select
         # modes in a structure it knows nothing about.
@@ -2038,6 +2393,7 @@ class MainWindow(QMainWindow):
         self._update_anscan_action()
         self._update_pes_action()
         self._update_import_action()  # a structure is now loaded — allow importing
+        self._update_tab_labels()  # the tab is named after its file, and the window too
         return True
 
     def _import_atoms(self) -> None:
@@ -2485,7 +2841,7 @@ class MainWindow(QMainWindow):
             self._unit_cell = unit_cell
         if bond_structure is not None:
             self._bond_structure = bond_structure
-        self.structure.add_listener(self._on_structure_changed)
+        self.structure.add_listener(self._routed(self._tab, self._on_structure_changed))
         self.viewport.show_structure(
             self.structure, reference_cell=unit_cell, bond_structure=bond_structure
         )
