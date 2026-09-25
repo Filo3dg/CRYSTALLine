@@ -552,3 +552,26 @@ def test_the_spin_arrows_are_drawn_and_themed(qapp):
     assert "chevron-up-dark.svg" in light_sheet    # a dark glyph on a light field
     assert "chevron-up-light.svg" in dark_sheet    # and the reverse
     assert "QSpinBox::up-arrow" in light_sheet
+
+
+def test_a_tab_close_button_is_a_quiet_glyph_in_the_theme_s_own_tone():
+    """The style's own × sits on a red button on the current tab — loud on a
+    bar of file names. It is drawn in the muted text tone instead, per theme."""
+    import os
+
+    from crystalline.resources import asset_path
+
+    for tone in ("dark", "light"):
+        for state in ("close", "close-hover"):
+            assert os.path.isfile(asset_path(f"{state}-{tone}.svg"))
+    light_sheet = theme.stylesheet(theme.LIGHT)
+    dark_sheet = theme.stylesheet(theme.DARK)
+    assert "QTabBar::close-button" in light_sheet
+    assert "close-dark.svg" in light_sheet and "close-hover-dark.svg" in light_sheet
+    assert "close-light.svg" in dark_sheet and "close-hover-light.svg" in dark_sheet
+    for tone in ("dark", "light"):
+        for state in ("close", "close-hover"):
+            with open(asset_path(f"{state}-{tone}.svg")) as handle:
+                stroke = re.search(r'stroke="(#[0-9a-fA-F]{6})"', handle.read()).group(1)
+            red, green, blue = (int(stroke[i:i + 2], 16) for i in (1, 3, 5))
+            assert max(red, green, blue) - min(red, green, blue) < 0x20, stroke  # a grey
