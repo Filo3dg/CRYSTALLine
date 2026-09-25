@@ -65,6 +65,7 @@ only in editing mode.
 | Panels | show one panel |
 | Restore all panels | put every panel back |
 | Next tab / Previous tab | {kbd}`Ctrl+Tab` / {kbd}`Ctrl+Shift+Tab` |
+| Along a/b/c axis, Along a\*/b\*/c\* | the same as the **VIEW** chips |
 
 On macOS the shortcuts use {kbd}`⌘` for {kbd}`Ctrl`; the tabs are stepped
 through with {kbd}`⌘⇧]` and {kbd}`⌘⇧[`.
@@ -83,7 +84,7 @@ The entries are enabled when the output contains the corresponding data; see
 
 | Group | What |
 | --- | --- |
-| **VIEW** | look down **a**, **b** or **c**; fit everything back in view |
+| **VIEW** | look down **a**, **b** or **c**, or down **a\***, **b\*** or **c\*** (the bc, ca or ab face square-on); fit everything back in view |
 | **ROTATE** | turn the scene by a fixed step (15° by default, set beside it) |
 | **CONV. CELL** | crystallographic cell on, primitive cell off |
 

@@ -52,7 +52,7 @@ class _StubWindow(QMainWindow):
     def _panel_docks(self):
         return list(self._docks.items())
 
-    def align_view_along(self, axis: int) -> None:
+    def align_view_along(self, axis: int, reciprocal: bool = False) -> None:
         pass
 
     def can_align_axes(self) -> bool:
@@ -144,8 +144,8 @@ def test_actions_the_window_drives_later_are_stashed_on_it(qapp):
         "_plot_actions",
     ):
         assert attr in vars(window), f"menus.build_menus did not set {attr}"
-    assert len(window._axis_actions) == 3  # a/b/c view alignment
-    assert len(window._axis_buttons) == 3
+    assert len(window._axis_actions) == 6  # a/b/c and a*/b*/c* view alignment
+    assert len(window._axis_buttons) == 6
 
 
 def test_rotate_buttons_sit_beside_the_axis_buttons(qapp):
@@ -355,3 +355,36 @@ def test_every_slot_the_menus_wire_up_exists_on_main_window():
     known = set(dir(MainWindow)) | assigned | set_by_menus
     missing = sorted(used - known)
     assert not missing, f"menus.py wires up names MainWindow does not have: {missing}"
+
+
+def test_the_reciprocal_chips_look_down_a_star_b_star_c_star(qapp):
+    """VESTA's a*, b*, c*: three more chips after a, b, c, and three more
+    entries in the View menu, each asking the viewport for a reciprocal view."""
+    window = _StubWindow()
+    asked = []
+    window.align_view_along = lambda axis, reciprocal=False: asked.append((axis, reciprocal))
+    menus.build_menus(window)
+
+    for button in window._axis_buttons:
+        button.click()
+    assert asked == [(0, False), (1, False), (2, False), (0, True), (1, True), (2, True)]
+    assert [b.property("chip") for b in window._axis_buttons[3:]] == ["axis-reciprocal"] * 3
+    assert [b.property("axis") for b in window._axis_buttons[3:]] == ["a", "b", "c"]
+    assert "a*" in window._axis_buttons[3].toolTip()
+
+    asked.clear()
+    labels = [a.text() for a in window._axis_actions]
+    assert labels[3:] == ["Along a*", "Along b*", "Along c*"]
+    for action in window._axis_actions[3:]:
+        action.trigger()
+    assert asked == [(0, True), (1, True), (2, True)]
+
+
+def test_the_viewport_takes_the_reciprocal_switch():
+    import inspect
+
+    from crystalline.ui.viewport import Viewport
+
+    parameters = inspect.signature(Viewport.align_view_along).parameters
+    assert list(parameters) == ["self", "axis", "reciprocal"]
+    assert parameters["reciprocal"].default is False

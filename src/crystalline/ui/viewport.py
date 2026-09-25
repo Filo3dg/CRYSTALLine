@@ -236,19 +236,28 @@ class Viewport(QWidget):
         cell = self._active_cell()
         return cell is not None and not np.allclose(cell, 0.0)
 
-    def align_view_along(self, axis: int) -> None:
+    def align_view_along(self, axis: int, reciprocal: bool = False) -> None:
         """Look down a lattice axis (0=a, 1=b, 2=c): that vector points into screen.
 
         The camera is aimed along the chosen lattice vector at the structure's
         centre, with an up direction taken from another lattice vector so the
         crystal sits square-on. Falls back to the world axis if there's no cell.
+
+        ``reciprocal`` looks down a*, b* or c* instead, as VESTA's buttons of
+        those names do: a* is normal to b and c, so the bc face of the cell is
+        seen square-on, undistorted, with b up — where looking down a shows it
+        foreshortened whenever a leans away from that normal (a monoclinic
+        cell's β, a triclinic's α and γ). In an orthogonal cell the two agree.
         """
         if self._structure is None:
             return
         cell = self._active_cell()
-        if cell is not None and not np.allclose(cell[axis], 0.0):
+        direction = None
+        if cell is not None and reciprocal:
+            direction = self._reciprocal_direction(cell, axis)
+        elif cell is not None and not np.allclose(cell[axis], 0.0):
             direction = np.asarray(cell[axis], dtype=float)
-        else:  # non-periodic (or degenerate vector): use the world axis
+        if direction is None:  # non-periodic (or degenerate vector): use the world axis
             direction = np.eye(3)[axis]
             cell = None
 
@@ -327,6 +336,29 @@ class Viewport(QWidget):
             if not np.allclose(cell, 0.0):
                 return cell
         return None
+
+    @staticmethod
+    def _reciprocal_direction(cell, axis: int) -> Optional[np.ndarray]:
+        """a*, b* or c* of ``cell`` (0, 1, 2), or ``None`` if the lattice gives none.
+
+        ``a* = (b × c) / V`` and cyclically, which divides by the signed volume
+        so the vector keeps its sense in a left-handed cell. A slab or polymer
+        may come with a zero vector for its aperiodic direction; it is replaced
+        by the normal to the other two first, which is the direction it stands
+        for — so c* of a slab is the view straight down onto the layer.
+        """
+        cell = np.array(cell, dtype=float)
+        if cell.shape != (3, 3):
+            return None
+        for index in range(3):
+            if np.linalg.norm(cell[index]) < 1e-8:
+                normal = np.cross(cell[(index + 1) % 3], cell[(index + 2) % 3])
+                if np.linalg.norm(normal) > 1e-8:
+                    cell[index] = normal
+        volume = float(np.linalg.det(cell))
+        if abs(volume) < 1e-8:
+            return None
+        return np.cross(cell[(axis + 1) % 3], cell[(axis + 2) % 3]) / volume
 
     @staticmethod
     def _up_for(dir_hat: np.ndarray, cell: Optional[np.ndarray], axis: int) -> np.ndarray:

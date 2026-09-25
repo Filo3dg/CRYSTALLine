@@ -543,6 +543,23 @@ def stylesheet(palette: Palette) -> str:
         background-color: {p.track};
         color: {p.text_muted};
     }}
+    /* a*, b*, c*: the same colours, as an outline — partners of the solid
+       a/b/c chips, not three more of them. */
+    QToolBar QToolButton[chip="axis-reciprocal"] {{
+        background: transparent;
+        border: 2px solid {p.border_strong};
+        border-radius: 5px;
+        padding: 3px 10px;
+    }}
+    QToolBar QToolButton[chip="axis-reciprocal"][axis="a"] {{ border-color: {_AXIS_A}; }}
+    QToolBar QToolButton[chip="axis-reciprocal"][axis="b"] {{ border-color: {_AXIS_B}; }}
+    QToolBar QToolButton[chip="axis-reciprocal"][axis="c"] {{ border-color: {_AXIS_C}; }}
+    QToolBar QToolButton[chip="axis-reciprocal"]:hover {{ background: {p.track}; }}
+    QToolBar QToolButton[chip="axis-reciprocal"]:pressed {{ background: {p.border}; }}
+    QToolBar QToolButton[chip="axis-reciprocal"]:disabled {{
+        border-color: {p.border};
+        background: transparent;
+    }}
 
     QToolBar QToolButton[chip="ghost"] {{
         background: transparent;
