@@ -413,6 +413,15 @@ def stylesheet(palette: Palette) -> str:
         border-bottom-color: {p.surface};
     }}
     QTabWidget > QTabBar::tab:hover:!selected {{ color: {p.text}; }}
+    /* The open files' tabs sit centred over the 3D view, as the toolbar's view
+       controls do above it — not pushed into the corner by the Info panel. */
+    QTabWidget#fileTabs::tab-bar {{ alignment: center; }}
+    QTabWidget#fileTabs::pane {{
+        border: none;
+        border-top: 1px solid {p.border};
+        border-radius: 0px;
+        top: -1px;
+    }}
     QTabBar::close-button {{
         image: url("{close}");
         background: transparent;

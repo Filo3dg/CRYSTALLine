@@ -391,3 +391,13 @@ def test_a_hidden_view_is_not_drawn_into():
     assert "self.interactor.render = render_if_shown" in init
     assert "isVisible()" in init
     assert "self._render_held" in inspect.getsource(inspect.unwrap(Viewport.eventFilter))
+
+
+def test_the_file_tabs_sit_centred_over_the_view():
+    import inspect
+
+    from crystalline.ui import theme
+
+    for palette in (theme.LIGHT, theme.DARK):
+        assert "QTabWidget#fileTabs::tab-bar { alignment: center; }" in theme.stylesheet(palette)
+    assert 'self._file_tabs.setObjectName("fileTabs")' in inspect.getsource(MainWindow.__init__)

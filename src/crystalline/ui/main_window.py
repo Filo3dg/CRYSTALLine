@@ -135,7 +135,7 @@ class MainWindow(QMainWindow):
         # centre: one page per open file, each its own 3D view. Movable, so
         # files can be put side by side in the bar; closable, one at a time.
         self._file_tabs = QTabWidget(self)
-        self._file_tabs.setDocumentMode(True)
+        self._file_tabs.setObjectName("fileTabs")  # centred by the theme, over the view
         self._file_tabs.setTabsClosable(True)
         self._file_tabs.setMovable(True)
         self._file_tabs.setElideMode(Qt.ElideMiddle)  # keep both ends of a long run name
