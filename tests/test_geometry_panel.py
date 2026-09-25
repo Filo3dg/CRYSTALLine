@@ -517,3 +517,50 @@ def test_a_molecule_offers_no_lattice_planes(qapp):
     assert panel._plane_hint.text() == "A molecule has no lattice planes."
     assert not panel._add_plane_btn.isEnabled()
     assert not panel._miller_boxes[0].isEnabled()
+
+
+def test_the_opacity_slider_sets_every_plane_or_the_selected_ones(qapp):
+    panel, _structure, drawn = _plane_panel()
+    assert panel.plane_opacity() == pytest.approx(0.35)
+    _type_miller(panel, 1, 0, 0)
+    panel._add_plane_btn.click()
+    _type_miller(panel, 0, 1, 0)
+    panel._add_plane_btn.click()
+
+    # nothing selected in the list: every plane follows the slider, live
+    panel._plane_opacity_slider.setValue(70)
+    assert [p.opacity for p in panel.lattice_planes()] == pytest.approx([0.7, 0.7])
+    assert [p.opacity for p in drawn[-1][0]] == pytest.approx([0.7, 0.7])
+    assert panel._plane_opacity_box.value() == pytest.approx(0.7)   # the box follows
+
+    # one selected: only that one
+    panel._plane_list.item(1).setSelected(True)
+    panel._plane_opacity_box.setValue(0.15)
+    assert [p.opacity for p in panel.lattice_planes()] == pytest.approx([0.7, 0.15])
+    assert panel._plane_opacity_slider.value() == 15
+
+
+def test_picking_a_plane_shows_its_opacity_and_new_planes_take_the_slider(qapp):
+    panel, _structure, drawn = _plane_panel()
+    panel._plane_opacity_slider.setValue(90)
+    panel._add_plane_btn.click()
+    assert panel.lattice_planes()[0].opacity == pytest.approx(0.9)   # added at the value shown
+    panel._plane_opacity_slider.setValue(20)
+    panel._add_plane_btn.click()
+    assert [p.opacity for p in panel.lattice_planes()] == pytest.approx([0.2, 0.2])
+
+    panel._plane_list.item(0).setSelected(True)
+    panel._plane_opacity_box.setValue(0.55)
+    count = len(drawn)
+    panel._plane_list.clearSelection()
+    panel._plane_list.item(1).setSelected(True)          # shows 0.2, changes nothing
+    assert panel._plane_opacity_slider.value() == 20
+    assert len(drawn) == count
+    assert [p.opacity for p in panel.lattice_planes()] == pytest.approx([0.55, 0.2])
+
+
+def test_the_opacity_row_waits_for_a_lattice(qapp):
+    panel = GeometryPanel(_water())
+    panel.set_miller_cell(None)
+    assert not panel._plane_opacity_slider.isEnabled()
+    assert not panel._plane_opacity_box.isEnabled()

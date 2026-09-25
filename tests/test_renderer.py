@@ -1472,3 +1472,35 @@ def test_a_molecule_has_no_lattice_planes():
     assert renderer.lattice_region() is None
     renderer.set_lattice_planes([LatticePlane((1, 0, 0))], None)
     assert renderer._lattice_plane_actors == []
+
+
+def test_a_plane_is_drawn_at_its_own_opacity_and_restyled_in_place():
+    from crystalline.core.lattice_planes import LatticePlane
+
+    nacl = bulk("NaCl", "rocksalt", a=5.64, cubic=True)
+    cell = nacl.cell[:]
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(Structure.from_ase(nacl))
+    family = LatticePlane((1, 1, 1), 0.5, family=True, opacity=0.2)
+    renderer.set_lattice_planes([family], cell)
+    sheets = _plane_sheets(renderer)
+    assert [s.GetProperty().GetOpacity() for s in sheets] == pytest.approx([0.2] * 3)
+
+    # Dragging the slider: same planes, new opacity — the very same actors, restyled.
+    before = list(renderer._lattice_plane_actors)
+    renderer.set_lattice_planes([replace(family, opacity=0.8, color="#3182bd")], cell)
+    assert renderer._lattice_plane_actors == before
+    assert [s.GetProperty().GetOpacity() for s in sheets] == pytest.approx([0.8] * 3)
+    assert sheets[0].GetProperty().GetColor() == pytest.approx((0x31 / 255, 0x82 / 255, 0xBD / 255), abs=1e-3)
+
+    # At 0 the sheet goes, the outline stays to show where the plane lies.
+    renderer.set_lattice_planes([replace(family, opacity=0.0)], cell)
+    outlines = renderer._lattice_plane_actors[1::2]
+    assert not any(s.GetVisibility() for s in sheets)
+    assert all(o.GetVisibility() and o.GetProperty().GetOpacity() == 1.0 for o in outlines)
+
+    # Moving it is new geometry, and a rebuild keeps the opacity asked for.
+    renderer.set_lattice_planes([replace(family, offset=0.0, opacity=0.6)], cell)
+    assert renderer._lattice_plane_actors != before
+    renderer.set_settings(RenderSettings(show_bonds=False))
+    assert [s.GetProperty().GetOpacity() for s in _plane_sheets(renderer)] == pytest.approx([0.6] * 2)

@@ -188,3 +188,14 @@ def test_the_region_can_be_moved_off_the_origin():
     assert polygon is not None and np.allclose(polygon[:, 2], -1.0)
     assert lp.polygon_in_region(lp.plane_point(cell, (0, 0, 1), 0.75),
                                 lp.normal(cell, (0, 0, 1)), origin, cell) is None
+
+
+def test_a_plane_carries_its_opacity_kept_between_0_and_1():
+    assert LatticePlane((1, 0, 0)).opacity == lp.DEFAULT_OPACITY
+    assert LatticePlane((1, 0, 0), opacity=1.7).opacity == 1.0
+    assert LatticePlane((1, 0, 0), opacity=-0.2).opacity == 0.0
+    plane = LatticePlane((1, 1, 0), 0.5, family=True)
+    # restyled, it is still drawn in the same place; moved, it is not
+    assert plane.drawn_the_same(LatticePlane((1, 1, 0), 0.5, family=True, color="#000000", opacity=0.9))
+    assert not plane.drawn_the_same(LatticePlane((1, 1, 0), 0.25, family=True))
+    assert not plane.drawn_the_same(LatticePlane((1, 1, 0), 0.5))

@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -83,6 +84,8 @@ _PLANE_COLORS = ("#e6550d", "#3182bd", "#31a354", "#756bb1", "#d6616b", "#8c6d31
 # height; asking for Qt's default 192 px each put the panel into scrolling in a
 # dock of ordinary height.
 _LIST_HINT_HEIGHT = 96
+# The opacity box, as wide as the value boxes of the Display panel.
+_OPACITY_BOX_WIDTH = 66
 
 
 class GeometryPanel(QWidget):
@@ -264,6 +267,7 @@ class GeometryPanel(QWidget):
         self._plane_list.setSelectionMode(QListWidget.ExtendedSelection)
         self._plane_list.itemChanged.connect(lambda _item: self._emit_planes())
         self._plane_list.itemSelectionChanged.connect(self._sync_buttons)
+        self._plane_list.itemSelectionChanged.connect(self._show_selected_opacity)
         box.addWidget(self._plane_list, 1)
 
         row = QHBoxLayout()
@@ -280,6 +284,32 @@ class GeometryPanel(QWidget):
         self._plane_remove_btn.clicked.connect(self._remove_selected_planes)
         row.addWidget(self._plane_remove_btn)
         row.addStretch(1)
+        box.addLayout(row)
+
+        # How see-through the sheets are: a plane that reads well over a sparse
+        # cell can hide a dense one, or vanish against the background. Live, like
+        # the Display panel's opacities; the outline stays solid at any value.
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Opacity"))
+        tip = ("Opacity of the selected plane(s) — of every plane when none is "
+               "selected — and of the planes added next. At 0 only the outline is drawn.")
+        self._plane_opacity_slider = QSlider(Qt.Horizontal)
+        self._plane_opacity_slider.setRange(0, 100)
+        self._plane_opacity_slider.setValue(int(round(lp.DEFAULT_OPACITY * 100)))
+        self._plane_opacity_slider.setToolTip(tip)
+        self._plane_opacity_slider.valueChanged.connect(
+            lambda value: self._set_plane_opacity(value / 100.0)
+        )
+        row.addWidget(self._plane_opacity_slider, 1)
+        self._plane_opacity_box = QDoubleSpinBox()
+        self._plane_opacity_box.setRange(0.0, 1.0)
+        self._plane_opacity_box.setSingleStep(0.05)
+        self._plane_opacity_box.setDecimals(2)
+        self._plane_opacity_box.setValue(lp.DEFAULT_OPACITY)
+        self._plane_opacity_box.setToolTip(tip)
+        self._plane_opacity_box.setFixedWidth(_OPACITY_BOX_WIDTH)
+        self._plane_opacity_box.valueChanged.connect(self._set_plane_opacity)
+        row.addWidget(self._plane_opacity_box)
         box.addLayout(row)
         return group
 
@@ -668,7 +698,8 @@ class GeometryPanel(QWidget):
         if miller is None or self._miller_cell is None:
             return
         self.add_lattice_plane(lp.LatticePlane(
-            miller, self._plane_offset.value(), family=self._family_check.isChecked()
+            miller, self._plane_offset.value(), family=self._family_check.isChecked(),
+            opacity=self.plane_opacity(),
         ))
 
     def _add_plane_through_atom(self) -> None:
@@ -682,7 +713,8 @@ class GeometryPanel(QWidget):
         self._plane_offset.setValue(offset)
         self._plane_offset.blockSignals(blocked)
         self.add_lattice_plane(lp.LatticePlane(
-            miller, offset, family=self._family_check.isChecked()
+            miller, offset, family=self._family_check.isChecked(),
+            opacity=self.plane_opacity(),
         ))
 
     def _atoms_on(self, plane: lp.LatticePlane) -> np.ndarray:
@@ -729,7 +761,8 @@ class GeometryPanel(QWidget):
             self._spacing_label.setText("d —")
         else:
             self._spacing_label.setText(f"d {lp.spacing(cell, miller):.3f} Å")
-        for widget in (self._plane_offset, self._family_check, *self._miller_boxes):
+        for widget in (self._plane_offset, self._family_check, *self._miller_boxes,
+                       self._plane_opacity_slider, self._plane_opacity_box):
             widget.setEnabled(cell is not None)
         self._sync_buttons()
 
@@ -745,6 +778,34 @@ class GeometryPanel(QWidget):
             self._planes[row] = dataclasses.replace(self._planes[row], color=chosen.name())
             self._plane_list.item(row).setIcon(_colour_swatch(chosen.name()))
         self._emit_planes()
+
+    def plane_opacity(self) -> float:
+        """The opacity shown — what the next plane is drawn with."""
+        return float(self._plane_opacity_box.value())
+
+    def _show_opacity(self, value: float) -> None:
+        """Put ``value`` in the slider and the box without it counting as a change."""
+        for widget, shown in ((self._plane_opacity_slider, int(round(value * 100))),
+                              (self._plane_opacity_box, value)):
+            blocked = widget.blockSignals(True)
+            widget.setValue(shown)
+            widget.blockSignals(blocked)
+
+    def _show_selected_opacity(self) -> None:
+        """Picking a plane in the list shows its opacity, ready to be changed."""
+        rows = sorted(self._plane_list.row(i) for i in self._plane_list.selectedItems())
+        if rows:
+            self._show_opacity(self._planes[rows[0]].opacity)
+
+    def _set_plane_opacity(self, value: float) -> None:
+        """Apply the opacity to the selected planes, or to all of them without a selection."""
+        value = min(1.0, max(0.0, float(value)))
+        self._show_opacity(value)     # the other of the slider/box pair follows
+        rows = sorted(self._plane_list.row(i) for i in self._plane_list.selectedItems())
+        for row in rows or range(len(self._planes)):
+            self._planes[row] = dataclasses.replace(self._planes[row], opacity=value)
+        if self._planes:
+            self._emit_planes()
 
     def _select_plane_atoms(self) -> None:
         rows = sorted(self._plane_list.row(i) for i in self._plane_list.selectedItems())
@@ -825,10 +886,16 @@ def _table_icon() -> QIcon:
 
 
 def _colour_swatch(color: str, size: int = 12) -> QIcon:
-    """A small solid-colour square, shown beside a recoloured measurement."""
+    """A small solid-colour square, shown beside a recoloured measurement or a plane.
+
+    The same square for a selected row: left to Qt, a selected item's icon is
+    tinted with the highlight colour, and the swatch vanished into it.
+    """
     pixmap = QPixmap(size, size)
     pixmap.fill(QColor(color))
-    return QIcon(pixmap)
+    icon = QIcon(pixmap)
+    icon.addPixmap(pixmap, QIcon.Selected)
+    return icon
 
 
 __all__ = ["GeometryPanel"]

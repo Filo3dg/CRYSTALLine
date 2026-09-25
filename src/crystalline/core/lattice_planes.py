@@ -39,6 +39,10 @@ ON_PLANE_TOLERANCE = 0.1
 # 3×3×3 supercell — would otherwise be hundreds of sheets.
 MAX_FAMILY_PLANES = 60
 
+# How opaque a plane's sheet is drawn unless told otherwise: enough to see, not
+# enough to hide the atoms behind it. Its outline is always drawn solid.
+DEFAULT_OPACITY = 0.35
+
 
 @dataclass(frozen=True)
 class LatticePlane:
@@ -48,12 +52,14 @@ class LatticePlane:
     through the reference cell's origin, so ``0`` and ``1`` are neighbouring
     planes of the family and ``0.5`` lies halfway between. ``family`` draws
     every plane of the family that crosses the region instead of just this one.
+    ``opacity`` is the sheet's, from 0 (only the outline is seen) to 1.
     """
 
     miller: Tuple[int, int, int]
     offset: float = 0.0
     family: bool = False
     color: Optional[str] = None
+    opacity: float = DEFAULT_OPACITY
 
     def __post_init__(self) -> None:
         indices = tuple(int(v) for v in self.miller)
@@ -63,6 +69,12 @@ class LatticePlane:
             raise ValueError("(0 0 0) is not a plane: give at least one non-zero index")
         object.__setattr__(self, "miller", indices)
         object.__setattr__(self, "offset", float(self.offset))
+        object.__setattr__(self, "opacity", min(1.0, max(0.0, float(self.opacity))))
+
+    def drawn_the_same(self, other: "LatticePlane") -> bool:
+        """Whether ``other`` is this plane in the same place — differing, at
+        most, in how it looks. Such a change needs no new geometry."""
+        return (self.miller, self.offset, self.family) == (other.miller, other.offset, other.family)
 
 
 # ── indices ───────────────────────────────────────────────────────────────
@@ -257,6 +269,7 @@ def _clip(polygon, m: np.ndarray, c: float, eps: float = 1e-9):
 
 
 __all__ = [
+    "DEFAULT_OPACITY",
     "LatticePlane",
     "MAX_FAMILY_PLANES",
     "ON_PLANE_TOLERANCE",
