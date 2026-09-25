@@ -120,3 +120,23 @@ def test_restore_all_leaves_open_panels_where_they_are(qapp):
     window._restore_all_panels()
 
     assert window._display_dock.isFloating()
+
+
+def test_a_hidden_title_bar_never_asks_for_a_negative_height(qapp):
+    """Each dock holds a stack of the open tabs' panels, empty until the first
+    tab exists. A bare QWidget as the title bar measures (-1, -1), and the dock
+    added that -1 to its empty content's height: a minimum size of (0, -1),
+    which Qt warns about on macOS ("Negative sizes (0,-1) are not possible")."""
+    from PySide6.QtWidgets import QStackedWidget
+
+    from crystalline.ui.main_window import _no_title_bar
+
+    window = QMainWindow()
+    dock = QDockWidget("Info", window)
+    dock.setWidget(QStackedWidget())            # no panel in it yet
+    window.addDockWidget(Qt.LeftDockWidgetArea, dock)
+    dock.setTitleBarWidget(_no_title_bar(dock))
+
+    assert dock.titleBarWidget().sizeHint().height() == 0
+    minimum = dock.layout().minimumSize()
+    assert minimum.width() >= 0 and minimum.height() >= 0

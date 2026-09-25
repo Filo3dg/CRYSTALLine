@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
@@ -734,7 +735,7 @@ class MainWindow(QMainWindow):
 
         for _title, dock in self._panel_docks():
             if self.tabifiedDockWidgets(dock):
-                dock.setTitleBarWidget(QWidget(dock))
+                dock.setTitleBarWidget(_no_title_bar(dock))
 
         for bar in self.findChildren(QTabBar):
             bar.setMovable(False)      # the tab order is not the user's to shuffle
@@ -2857,6 +2858,22 @@ class MainWindow(QMainWindow):
         self._update_view_actions()  # a/b/c alignment depends on the cell just shown
         if hasattr(self, "display_panel"):
             self.display_panel.set_elements(self.structure.numbers)  # refresh element swatches
+
+
+def _no_title_bar(dock: QDockWidget) -> QWidget:
+    """A title bar for ``dock`` that takes up no room at all.
+
+    Not a bare ``QWidget``: that measures (-1, -1) — "no size hint" — and a
+    dock adds its title bar's height to its content's. A dock whose content
+    had no minimum height yet — each dock holds a stack of the tabs' panels,
+    empty until the first tab is made — then asked for a minimum height of
+    -1, which Qt reports on macOS as "Negative sizes (0,-1) are not possible".
+    An empty layout with no margins measures (0, 0), as the bar should.
+    """
+    bar = QWidget(dock)
+    layout = QHBoxLayout(bar)
+    layout.setContentsMargins(0, 0, 0, 0)
+    return bar
 
 
 def _floating_plot_geometry(window: QRect, screen: Optional[QRect]) -> QRect:
