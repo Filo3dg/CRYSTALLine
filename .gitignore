@@ -24,3 +24,5 @@ site/
 # Claude Code (machine-local settings)
 .claude/settings.local.json
 
+# Files the Claude desktop app saves into the folder (screenshots, exports)
+Claude outputs/
