@@ -262,6 +262,7 @@ class MainWindow(QMainWindow):
         # The Geometry panel's position boxes show a live atom, so they go stale
         # the moment anything moves it — a drag, an arrow-key nudge, an undo.
         self.geometry_panel.sync_position()
+        self.geometry_panel.refresh_planes()  # atoms may have moved onto or off a plane
         self.viewport.renderer.refresh()
         # Editing the geometry: stop any animation and re-anchor it to the edited
         # geometry (drop the modes if the atom count changed). Passing the new
@@ -356,6 +357,11 @@ class MainWindow(QMainWindow):
         self.geometry_panel.set_position_requested.connect(self._set_position_of_selection)
         self.geometry_panel.add_atom_requested.connect(self._add_atom)
         self.geometry_panel.annotations_changed.connect(self.viewport.set_annotations)
+        # Lattice planes (hkl), indices in the conventional cell; "Select atoms"
+        # on a plane goes through the shared selection like a pick would.
+        self.geometry_panel.lattice_planes_changed.connect(self.viewport.set_lattice_planes)
+        self.geometry_panel.select_atoms_requested.connect(self.structure_panel.set_selection)
+        self.geometry_panel.set_miller_cell(self._miller_cell())
         # Symmetry panel: the ticked elements are drawn over the structure.
         self.symmetry_panel.elements_changed.connect(self.viewport.set_symmetry_elements)
         self.symmetry_panel.reduction_changed.connect(self._apply_symmetry_reduction)
@@ -1254,6 +1260,24 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001 - symmetry analysis is a nicety here
             return None
 
+    def _miller_cell(self):
+        """The cell the Geometry panel's lattice planes are indexed in, or ``None``.
+
+        The conventional cell, as for the density slice — so (hkl) means the
+        same plane there and in the view — falling back to the unit cell on
+        screen when that cannot be built. A molecule has none.
+        """
+        structure = getattr(self, "_source", None)
+        if structure is None or not len(structure) or not structure.is_periodic:
+            return None
+        cell = self._conventional_cell()
+        if cell is None:
+            unit = getattr(self, "_unit_cell", None)
+            cell = None if unit is None else np.asarray(unit, dtype=float)
+        if cell is None or cell.shape != (3, 3) or abs(np.linalg.det(cell)) < 1e-8:
+            return None
+        return cell
+
     def _clear_density(self) -> None:
         """Take a shown field off the view."""
         self.viewport.renderer.set_density(None)
@@ -1992,6 +2016,8 @@ class MainWindow(QMainWindow):
         # just as faithfully — and a slice's cutaway with it, hiding half of the
         # new structure behind a plane of the old one.
         self._clear_density()
+        # Lattice planes outlive a change of view, not a change of crystal.
+        self.geometry_panel.clear_lattice_planes()
         self._source = result.structure
         self._set_qmodes(result.qpoints if result.has_phonons else [])
         self._adps = self._load_adps(path)
@@ -2466,6 +2492,9 @@ class MainWindow(QMainWindow):
         self.structure_panel.set_structure(self.structure)
         if hasattr(self, "geometry_panel"):
             self.geometry_panel.set_structure(self.structure)
+            # The source may be a new crystal, or a new lattice: re-derive the
+            # cell the lattice planes are indexed in (which redraws them).
+            self.geometry_panel.set_miller_cell(self._miller_cell())
         if hasattr(self, "symmetry_panel"):
             self.symmetry_panel.set_structure(self._analysis_cell())
         self._reset_undo()  # edits (and their undo history) don't cross a re-derive

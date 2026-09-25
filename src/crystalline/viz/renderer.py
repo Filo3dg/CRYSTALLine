@@ -68,6 +68,16 @@ _SYMMETRY_BOUNDS_MARGIN = 0.5
 # distance to the centre — see _label_anchor.
 _SYMMETRY_LABEL_INSET = 0.08
 
+# Lattice planes (hkl) from the Geometry panel: translucent sheets clipped to the
+# drawn cell, each outlined in a darker shade of its own colour so its edge reads
+# where it crosses others.
+_LATTICE_PLANE_OPACITY = 0.35
+_LATTICE_PLANE_COLOR = "#e6550d"
+_LATTICE_PLANE_EDGE_SHADE = 0.6
+_LATTICE_PLANE_EDGE_WIDTH = 2.0
+# How far past the atoms a slab's planes reach across the vacuum, in Å.
+_LATTICE_PLANE_SLAB_MARGIN = 1.0
+
 # Coordination-polyhedra outline: only edges where adjacent faces bend by more
 # than this are real polyhedron edges (the rest are the hull's triangulation of
 # a flat face), drawn this wide in this fraction of the face colour.
@@ -273,6 +283,11 @@ class StructureRenderer:
         self._symmetry_elements: list = []    # symmetry elements drawn over the structure
         self._symmetry_actors: list = []
         self._symmetry_labels = False         # write each element's symbol beside it
+        # Lattice planes (hkl): the planes asked for, the cell their indices are
+        # quoted in, and the actors drawing them.
+        self._lattice_planes: list = []
+        self._lattice_plane_cell: Optional[np.ndarray] = None
+        self._lattice_plane_actors: list = []
         self._bond_structure: Optional[Structure] = None  # clean cell for coordination
         # Geometry that decides *which* atoms are bonded while something moves the
         # atoms without changing the chemistry (a phonon animation). None means
@@ -673,6 +688,7 @@ class StructureRenderer:
         self._orbital_actors = []     # likewise: _draw_orbital re-adds them below
         self._annotation_actors = []  # plotter.clear() dropped them; _draw_annotations re-adds
         self._symmetry_actors = []    # likewise: _draw_symmetry_elements re-adds them
+        self._lattice_plane_actors = []  # and _draw_lattice_planes
         self._density_actors = []     # and _draw_density, last of all
         self._density_bar = None      # plotter.clear() took the colour bar too
         self._highlight_actors = {}
@@ -708,6 +724,7 @@ class StructureRenderer:
         self._draw_orbital()      # and so does a shown orbital
         self._draw_annotations()  # measurements survive a rebuild (plotter.clear())
         self._draw_symmetry_elements()  # and so do the shown symmetry elements
+        self._draw_lattice_planes()  # and the lattice planes asked for
         # A drawn field used to vanish on any rebuild — a display setting, an
         # edit — while its actors were still counted as shown. It goes last so
         # a slice's cutaway reaches every actor the rebuild has just made.
@@ -1205,6 +1222,107 @@ class StructureRenderer:
         if on_top:
             _draw_over_scene(actor)
         self._symmetry_actors.append(actor)
+
+    # ── lattice planes (hkl) ────────────────────────────────────────────
+    def set_lattice_planes(self, planes, miller_cell=None) -> None:
+        """Draw lattice planes over the structure, replacing any shown.
+
+        ``planes`` are :class:`~crystalline.core.lattice_planes.LatticePlane`
+        objects, their indices quoted in ``miller_cell`` — the conventional cell
+        — or, without one, in the cell on screen. Each is drawn as the polygon it
+        cuts out of the drawn cell (the supercell, if one is shown), and a family
+        as every plane of it crossing that cell. Kept and redrawn on every
+        rebuild, like the measurements.
+        """
+        planes = list(planes)
+        self._lattice_plane_cell = (None if miller_cell is None
+                                    else np.asarray(miller_cell, dtype=float))
+        if not planes and not self._lattice_planes and not self._lattice_plane_actors:
+            return  # nothing shown, nothing asked for: no redraw
+        self._lattice_planes = planes
+        self._clear_lattice_planes()
+        self._draw_lattice_planes()
+        self.plotter.render()
+
+    def _clear_lattice_planes(self) -> None:
+        for actor in self._lattice_plane_actors:
+            self.plotter.remove_actor(actor, render=False)
+        self._lattice_plane_actors = []
+
+    def lattice_region(self):
+        """``(origin, vectors)`` of the region lattice planes are drawn across.
+
+        The cell on screen — the supercell when one is tiled — with a slab's
+        vacuum axis cut down to the layer and a little either side of it. A
+        molecule has no lattice, and gives ``None``.
+        """
+        cell = self._cell_or_none()
+        if self._structure is None or cell is None or len(self._positions) == 0:
+            return None
+        origin = np.zeros(3)
+        vectors = cell.copy()
+        periodic = [bool(p) for p in self._structure.pbc]
+        if not any(periodic):
+            return None
+        for axis, is_periodic in enumerate(periodic):
+            if is_periodic:
+                continue
+            direction = vectors[axis] / np.linalg.norm(vectors[axis])
+            heights = self._positions @ direction
+            low = float(heights.min()) - _LATTICE_PLANE_SLAB_MARGIN
+            high = float(heights.max()) + _LATTICE_PLANE_SLAB_MARGIN
+            origin = origin + low * direction
+            vectors[axis] = direction * (high - low)
+        return origin, vectors
+
+    def _draw_lattice_planes(self) -> None:
+        """(Re)draw the stored lattice planes. Never raises into a redraw."""
+        from crystalline.core import lattice_planes as lp
+
+        self._lattice_plane_actors = []
+        if not self._lattice_planes:
+            return
+        region = self.lattice_region()
+        if region is None:
+            return
+        origin, vectors = region
+        reference = self._lattice_plane_cell
+        if reference is None or reference.shape != (3, 3) or abs(np.linalg.det(reference)) < 1e-8:
+            reference = self._cell_or_none()
+        if reference is None:
+            return
+        corners = lp.region_corners(origin, vectors)
+        for plane in self._lattice_planes:
+            try:
+                unit = lp.normal(reference, plane.miller)
+                offsets = (lp.offsets_across(reference, plane.miller, plane.offset, corners)
+                           if plane.family else [plane.offset])
+                for offset in offsets:
+                    polygon = lp.polygon_in_region(
+                        lp.plane_point(reference, plane.miller, offset), unit, origin, vectors)
+                    if polygon is not None:
+                        self._add_lattice_plane(polygon, plane.color or _LATTICE_PLANE_COLOR)
+            except Exception:  # noqa: BLE001 - one bad plane must not kill the redraw
+                continue
+
+    def _add_lattice_plane(self, polygon: np.ndarray, color: str) -> None:
+        count = len(polygon)
+        sheet = pv.PolyData(polygon, faces=np.hstack([[count], np.arange(count)])).triangulate()
+        actor = self.plotter.add_mesh(
+            sheet, color=color, opacity=_LATTICE_PLANE_OPACITY,
+            smooth_shading=False, render=False,
+        )
+        actor.SetPickable(False)  # a plane is never a pick target
+        self._lattice_plane_actors.append(actor)
+        outline = pv.PolyData(polygon)
+        outline.lines = np.hstack([[count + 1], np.arange(count), [0]])
+        edge = np.clip(_hex_to_rgb(color).astype(float) / 255.0 * _LATTICE_PLANE_EDGE_SHADE, 0, 1)
+        actor = self.plotter.add_mesh(
+            outline, color=tuple(edge), line_width=_LATTICE_PLANE_EDGE_WIDTH,
+            lighting=False, render=False,
+        )
+        actor.SetPickable(False)
+        self._lattice_plane_actors.append(actor)
 
     # ── crystalline orbital (isosurface) ────────────────────────────────
     def set_orbital(self, field, isovalue: float = DEFAULT_ORBITAL_ISOVALUE) -> None:

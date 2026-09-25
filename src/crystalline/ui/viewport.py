@@ -249,6 +249,10 @@ class Viewport(QWidget):
         """Draw the Geometry panel's measurements over the structure."""
         self.renderer.set_annotations(annotations)
 
+    def set_lattice_planes(self, planes, miller_cell=None) -> None:
+        """Draw lattice planes (hkl) — see :meth:`StructureRenderer.set_lattice_planes`."""
+        self.renderer.set_lattice_planes(planes, miller_cell)
+
     def set_symmetry_elements(self, elements, labels: bool = False) -> None:
         """Draw the Symmetry panel's ticked elements over the structure."""
         self.renderer.set_symmetry_elements(elements, labels=labels)

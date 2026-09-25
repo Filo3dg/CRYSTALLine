@@ -1,10 +1,14 @@
 """Geometry panel: measure the selection, and edit atoms with the mouse.
 
-Docked beside Info and Display. Two halves:
+Docked beside Info and Display. Three parts:
 
 * **Measure** — turn the current 3D selection into a distance (2 atoms), angle
   (3), dihedral (4) or least-squares plane (3+), keep a list of them, and draw
   the ones that are ticked over the structure as points/lines/planes.
+* **Lattice planes (hkl)** — draw a crystallographic plane, or its whole
+  family, from its Miller indices alone: placed at a typed position along the
+  normal or through the selected atom, with d(hkl) and the atoms lying on it.
+  No atoms have to be picked and fitted, as the plane fit needs.
 * **Atoms** — add, delete, duplicate, re-element, translate the selection and
   place a single atom at typed cartesian coordinates, without going to the Edit
   menu. These mirror the Edit-menu actions and are
@@ -22,7 +26,7 @@ import dataclasses
 from typing import List, Optional, Sequence
 
 import numpy as np
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -35,11 +39,14 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from crystalline.core import lattice_planes as lp
 from crystalline.core import measure as measure_mod
 from crystalline.core.structure import Structure
 
@@ -60,6 +67,23 @@ _COORD_EPS = 1e-9
 # ignored entirely — see the size policy in _build_atoms_group.
 _COORD_BOX_MIN_WIDTH = 56
 
+# Lattice planes. Indices beyond ±12 are planes a few hundredths of an Ångström
+# apart, which no drawing can show.
+_MILLER_RANGE = 12
+_MILLER_BOX_MIN_WIDTH = 44
+# Where a typed plane sits, in units of d(hkl) from the plane through the origin;
+# wide enough for a large supercell.
+_PLANE_OFFSET_RANGE = 100.0
+_PLANE_OFFSET_STEP = 0.25
+# Each new plane takes the next colour, so two planes on screen can be told
+# apart and matched to their line in the list. Chosen away from the measurement
+# and symmetry-element colours.
+_PLANE_COLORS = ("#e6550d", "#3182bd", "#31a354", "#756bb1", "#d6616b", "#8c6d31")
+# The height (px) the two lists ask for: a few rows. They grow into any spare
+# height; asking for Qt's default 192 px each put the panel into scrolling in a
+# dock of ordinary height.
+_LIST_HINT_HEIGHT = 96
+
 
 class GeometryPanel(QWidget):
     """Measurements and atom-editing tools for the current selection."""
@@ -74,6 +98,10 @@ class GeometryPanel(QWidget):
     set_position_requested = Signal(object)  # cartesian (x, y, z) in Å for the one selected atom
     # the measurements that should be drawn in 3D (possibly empty)
     annotations_changed = Signal(list)
+    # the lattice planes to draw (possibly empty), and the cell their indices are in
+    lattice_planes_changed = Signal(list, object)
+    # atoms (indices into the shown structure) lying on the chosen planes, to select
+    select_atoms_requested = Signal(list)
 
     def __init__(self, structure: Structure, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -81,13 +109,36 @@ class GeometryPanel(QWidget):
         self._selection: List[int] = []
         self._measurements: List[measure_mod.Measurement] = []
         self._editing = False
+        self._planes: List[lp.LatticePlane] = []
+        self._miller_cell: Optional[np.ndarray] = None
+        self._next_plane_colour = 0
 
-        layout = QVBoxLayout(self)
+        # Three groups do not fit a short dock, and a dock's minimum height is
+        # the window's: scroll, as the Display panel does, rather than make the
+        # window refuse to get shorter. Downwards only — the rows compress.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+        body = QWidget()
+        scroll.setWidget(body)
+
+        layout = QVBoxLayout(body)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
         layout.addWidget(self._build_measure_group(), 1)
+        layout.addWidget(self._build_planes_group(), 1)
         layout.addWidget(self._build_atoms_group())
         layout.addStretch(0)
+        # Never narrower than the rows plus a scroll bar, which would cut their
+        # right edge off once the scroll bar appears.
+        scroll.setMinimumWidth(
+            body.minimumSizeHint().width() + scroll.verticalScrollBar().sizeHint().width()
+        )
+        self._sync_plane_form()
         self._sync_buttons()
 
     # ── construction ────────────────────────────────────────────────────
@@ -114,7 +165,7 @@ class GeometryPanel(QWidget):
         box.addLayout(row)
 
         # Ticked measurements are drawn in the 3D view.
-        self._list = QListWidget()
+        self._list = _CompactList()
         self._list.setToolTip("Tick a measurement to show it in the 3D view")
         self._list.setSelectionMode(QListWidget.ExtendedSelection)
         self._list.itemChanged.connect(lambda _item: self._emit_annotations())
@@ -135,6 +186,101 @@ class GeometryPanel(QWidget):
         box.addLayout(row)
         # The colour button follows the list selection, not just "any measurement".
         self._list.itemSelectionChanged.connect(self._sync_buttons)
+        return group
+
+    def _build_planes_group(self) -> QWidget:
+        self._planes_group = group = QGroupBox("Lattice planes (hkl)")
+        box = QVBoxLayout(group)
+
+        # Which cell the indices are in: the one thing that decides what (001)
+        # means, so it is said rather than left to be guessed.
+        self._plane_hint = QLabel()
+        self._plane_hint.setWordWrap(True)
+        self._plane_hint.setToolTip(
+            "Miller indices are quoted in the conventional cell — as for the density "
+            "slice — whatever cell, primitive view or supercell is on screen"
+        )
+        self._plane_hint.setStyleSheet("color: palette(mid);")
+        box.addWidget(self._plane_hint)
+
+        row = QHBoxLayout()
+        self._miller_boxes = []
+        for name, value in (("h", 1), ("k", 0), ("l", 0)):
+            if name == "l":
+                # Hexagonal axes: the redundant third Miller–Bravais index, shown
+                # but not typed — it is fixed by the other two.
+                self._i_label = QLabel()
+                self._i_label.setToolTip("i = −(h + k): hexagonal axes are indexed (h k i l)")
+                row.addWidget(self._i_label)
+            spin = QSpinBox()
+            spin.setRange(-_MILLER_RANGE, _MILLER_RANGE)
+            spin.setValue(value)
+            spin.setPrefix(f"{name} ")
+            # Same reasoning as the coordinate boxes: share the row, never widen the dock.
+            spin.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            spin.setMinimumWidth(_MILLER_BOX_MIN_WIDTH)
+            spin.valueChanged.connect(lambda _value: self._sync_plane_form())
+            row.addWidget(spin, 1)
+            self._miller_boxes.append(spin)
+        self._spacing_label = QLabel()
+        self._spacing_label.setToolTip("Distance between neighbouring planes of the family")
+        row.addWidget(self._spacing_label)
+        box.addLayout(row)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Position"))
+        self._plane_offset = QDoubleSpinBox()
+        self._plane_offset.setRange(-_PLANE_OFFSET_RANGE, _PLANE_OFFSET_RANGE)
+        self._plane_offset.setDecimals(3)
+        self._plane_offset.setSingleStep(_PLANE_OFFSET_STEP)
+        self._plane_offset.setSuffix(" d")
+        self._plane_offset.setToolTip(
+            "Along the normal, in units of d(hkl) from the plane through the origin: "
+            "0 and 1 are neighbouring planes of the family, 0.5 lies halfway between"
+        )
+        self._plane_offset.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self._plane_offset.setMinimumWidth(_COORD_BOX_MIN_WIDTH)
+        row.addWidget(self._plane_offset, 1)
+        self._family_check = QCheckBox("Whole family")
+        self._family_check.setToolTip(
+            "Draw every plane of the family across the cell on screen, d(hkl) apart"
+        )
+        row.addWidget(self._family_check)
+        box.addLayout(row)
+
+        row = QHBoxLayout()
+        self._add_plane_btn = QPushButton("Add plane")
+        self._add_plane_btn.setToolTip("Draw (hkl) at the position typed")
+        self._add_plane_btn.clicked.connect(self._add_typed_plane)
+        row.addWidget(self._add_plane_btn, 1)
+        self._plane_atom_btn = QPushButton("Through selected atom")
+        self._plane_atom_btn.setToolTip("Draw (hkl) through the one atom selected")
+        self._plane_atom_btn.clicked.connect(self._add_plane_through_atom)
+        row.addWidget(self._plane_atom_btn, 1)
+        box.addLayout(row)
+
+        self._plane_list = _CompactList()
+        self._plane_list.setToolTip("Tick a plane to show it in the 3D view")
+        self._plane_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self._plane_list.itemChanged.connect(lambda _item: self._emit_planes())
+        self._plane_list.itemSelectionChanged.connect(self._sync_buttons)
+        box.addWidget(self._plane_list, 1)
+
+        row = QHBoxLayout()
+        self._plane_colour_btn = QPushButton("Colour…")
+        self._plane_colour_btn.setToolTip("Set the colour of the selected plane(s)")
+        self._plane_colour_btn.clicked.connect(self._set_plane_colour)
+        row.addWidget(self._plane_colour_btn)
+        self._plane_select_btn = QPushButton("Select atoms")
+        self._plane_select_btn.setToolTip("Select the atoms lying on the selected plane(s)")
+        self._plane_select_btn.clicked.connect(self._select_plane_atoms)
+        row.addWidget(self._plane_select_btn)
+        self._plane_remove_btn = QPushButton("Remove")
+        self._plane_remove_btn.setToolTip("Remove the selected plane(s)")
+        self._plane_remove_btn.clicked.connect(self._remove_selected_planes)
+        row.addWidget(self._plane_remove_btn)
+        row.addStretch(1)
+        box.addLayout(row)
         return group
 
     def _build_atoms_group(self) -> QWidget:
@@ -347,10 +493,16 @@ class GeometryPanel(QWidget):
         self._table_btn.setIcon(_table_icon())
 
     def set_structure(self, structure: Structure) -> None:
-        """Rebind after a load or a view change; measurements no longer apply."""
+        """Rebind after a load or a view change; measurements no longer apply.
+
+        Lattice planes do: they are named by indices, not by atoms, so they are
+        kept across a supercell or a change of view — and are cleared on a new
+        file with :meth:`clear_lattice_planes`.
+        """
         self._structure = structure
         self._selection = []
         self.clear_measurements()
+        self.refresh_planes()
         self.sync_position()  # also calls _sync_buttons
 
     def set_selection(self, indices: Sequence[int]) -> None:
@@ -440,6 +592,183 @@ class GeometryPanel(QWidget):
     def _emit_annotations(self) -> None:
         self.annotations_changed.emit(self.shown_annotations())
 
+    # ── lattice planes ──────────────────────────────────────────────────
+    def set_miller_cell(self, cell) -> None:
+        """The cell Miller indices are quoted in — the conventional cell.
+
+        ``None`` for a molecule, which has no lattice planes. Re-sends the
+        planes, since what (hkl) means has changed with the cell.
+        """
+        cell = None if cell is None else np.asarray(cell, dtype=float)
+        if cell is not None and (cell.shape != (3, 3) or abs(np.linalg.det(cell)) < 1e-8):
+            cell = None
+        self._miller_cell = cell
+        self._sync_plane_form()
+        self.refresh_planes()
+        self._emit_planes()
+
+    def miller_cell(self) -> Optional[np.ndarray]:
+        return None if self._miller_cell is None else self._miller_cell.copy()
+
+    def lattice_planes(self) -> List[lp.LatticePlane]:
+        """Every plane in the list, shown or not."""
+        return list(self._planes)
+
+    def shown_lattice_planes(self) -> List[lp.LatticePlane]:
+        """The planes currently ticked for display in 3D."""
+        return [
+            plane
+            for plane, item in zip(self._planes, self._plane_items())
+            if item.checkState() == Qt.Checked
+        ]
+
+    def clear_lattice_planes(self) -> None:
+        self._planes = []
+        self._plane_list.clear()
+        self._next_plane_colour = 0
+        self._emit_planes()
+
+    def refresh_planes(self) -> None:
+        """Recount the atoms on each plane — after an edit or a new view.
+
+        Nothing is re-sent: the renderer keeps the planes and redraws them on
+        every rebuild itself. Only a new cell (:meth:`set_miller_cell`) changes
+        what is drawn.
+        """
+        blocked = self._plane_list.blockSignals(True)  # relabelling is not a tick
+        for plane, item in zip(self._planes, self._plane_items()):
+            item.setText(self._plane_summary(plane))
+        self._plane_list.blockSignals(blocked)
+
+    def add_lattice_plane(self, plane: lp.LatticePlane) -> None:
+        """Append ``plane`` to the list, shown, in the next free colour if it has none."""
+        if plane.color is None:
+            plane = dataclasses.replace(
+                plane, color=_PLANE_COLORS[self._next_plane_colour % len(_PLANE_COLORS)]
+            )
+            self._next_plane_colour += 1
+        self._planes.append(plane)
+        item = QListWidgetItem(self._plane_summary(plane))
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item.setCheckState(Qt.Checked)  # shown straight away, like a measurement
+        item.setIcon(_colour_swatch(plane.color))
+        blocked = self._plane_list.blockSignals(True)
+        self._plane_list.addItem(item)
+        self._plane_list.blockSignals(blocked)
+        self._emit_planes()
+        self._sync_buttons()
+
+    def _typed_miller(self):
+        """The indices typed, or ``None`` for (0 0 0), which is not a plane."""
+        miller = tuple(spin.value() for spin in self._miller_boxes)
+        return None if miller == (0, 0, 0) else miller
+
+    def _add_typed_plane(self) -> None:
+        miller = self._typed_miller()
+        if miller is None or self._miller_cell is None:
+            return
+        self.add_lattice_plane(lp.LatticePlane(
+            miller, self._plane_offset.value(), family=self._family_check.isChecked()
+        ))
+
+    def _add_plane_through_atom(self) -> None:
+        """(hkl) through the selected atom; the position box shows where that is."""
+        miller = self._typed_miller()
+        position = self._current_position()
+        if miller is None or position is None or self._miller_cell is None:
+            return
+        offset = round(lp.offset_of(self._miller_cell, miller, position), 6)
+        blocked = self._plane_offset.blockSignals(True)
+        self._plane_offset.setValue(offset)
+        self._plane_offset.blockSignals(blocked)
+        self.add_lattice_plane(lp.LatticePlane(
+            miller, offset, family=self._family_check.isChecked()
+        ))
+
+    def _atoms_on(self, plane: lp.LatticePlane) -> np.ndarray:
+        if self._miller_cell is None or not len(self._structure):
+            return np.empty(0, dtype=int)
+        return lp.atoms_on(self._miller_cell, plane, self._structure.positions)
+
+    def _plane_summary(self, plane: lp.LatticePlane) -> str:
+        """``(1 1 1) at 0.50 d · d 3.256 Å · 4 atoms`` — or ``… family …``."""
+        if self._miller_cell is None:
+            return f"{lp.label(plane.miller)} (no lattice)"
+        name = lp.label(plane.miller, self._miller_cell)
+        d = lp.spacing(self._miller_cell, plane.miller)
+        count = len(self._atoms_on(plane))
+        atoms = f"{count} atom" + ("" if count == 1 else "s")
+        if plane.family:
+            shift = plane.offset - np.floor(plane.offset)
+            where = "family" if shift < 1e-6 or shift > 1 - 1e-6 else f"family +{shift:.2f} d"
+        else:
+            where = f"at {plane.offset:.2f} d"
+        return f"{name} {where} · d {d:.3f} Å · {atoms}"
+
+    def _sync_plane_form(self) -> None:
+        """Hint, i index and d(hkl) for the indices typed and the cell they are in."""
+        cell = self._miller_cell
+        miller = self._typed_miller()
+        hexagonal = cell is not None and lp.is_hexagonal(cell)
+        self._i_label.setVisible(hexagonal)
+        if hexagonal:
+            h, k, _l = (spin.value() for spin in self._miller_boxes)
+            self._i_label.setText(f"i {-(h + k)}")
+        if cell is None:
+            self._plane_hint.setText(
+                "A molecule has no lattice planes." if len(self._structure)
+                else "Open a crystal to draw its lattice planes."
+            )
+        else:
+            a, b, c = (float(np.linalg.norm(v)) for v in cell)
+            self._plane_hint.setText(
+                f"Conventional cell (h k i l): a {a:.3f}, c {c:.3f} Å" if hexagonal
+                else f"Conventional cell: a {a:.3f}, b {b:.3f}, c {c:.3f} Å"
+            )
+        if cell is None or miller is None:
+            self._spacing_label.setText("d —")
+        else:
+            self._spacing_label.setText(f"d {lp.spacing(cell, miller):.3f} Å")
+        for widget in (self._plane_offset, self._family_check, *self._miller_boxes):
+            widget.setEnabled(cell is not None)
+        self._sync_buttons()
+
+    def _set_plane_colour(self) -> None:
+        rows = sorted(self._plane_list.row(i) for i in self._plane_list.selectedItems())
+        if not rows:
+            return
+        seed = QColor(self._planes[rows[0]].color or _PLANE_COLORS[0])
+        chosen = QColorDialog.getColor(seed, self, "Plane colour")
+        if not chosen.isValid():
+            return
+        for row in rows:
+            self._planes[row] = dataclasses.replace(self._planes[row], color=chosen.name())
+            self._plane_list.item(row).setIcon(_colour_swatch(chosen.name()))
+        self._emit_planes()
+
+    def _select_plane_atoms(self) -> None:
+        rows = sorted(self._plane_list.row(i) for i in self._plane_list.selectedItems())
+        on = set()
+        for row in rows:
+            on.update(int(i) for i in self._atoms_on(self._planes[row]))
+        if rows:
+            self.select_atoms_requested.emit(sorted(on))
+
+    def _remove_selected_planes(self) -> None:
+        rows = sorted((self._plane_list.row(i) for i in self._plane_list.selectedItems()),
+                      reverse=True)
+        for row in rows:
+            self._plane_list.takeItem(row)
+            del self._planes[row]
+        self._emit_planes()
+        self._sync_buttons()
+
+    def _plane_items(self) -> List[QListWidgetItem]:
+        return [self._plane_list.item(row) for row in range(self._plane_list.count())]
+
+    def _emit_planes(self) -> None:
+        self.lattice_planes_changed.emit(self.shown_lattice_planes(), self.miller_cell())
+
     # ── editing ─────────────────────────────────────────────────────────
     def _on_editing_toggled(self, enabled: bool) -> None:
         self._editing = bool(enabled)
@@ -455,6 +784,16 @@ class GeometryPanel(QWidget):
         self._clear_btn.setEnabled(bool(self._measurements))
         self._color_btn.setEnabled(bool(self._list.selectedItems()))
 
+        # A plane needs indices that name one, and a cell for them to be in; the
+        # atom it goes through, exactly one atom selected.
+        can_place = self._miller_cell is not None and self._typed_miller() is not None
+        self._add_plane_btn.setEnabled(can_place)
+        self._plane_atom_btn.setEnabled(can_place and count == 1)
+        picked = bool(self._plane_list.selectedItems())
+        self._plane_colour_btn.setEnabled(picked)
+        self._plane_select_btn.setEnabled(picked and self._miller_cell is not None)
+        self._plane_remove_btn.setEnabled(picked)
+
         self._add_btn.setEnabled(self._editing)
         on_selection = self._editing and count >= 1
         for button in (self._delete_btn, self._duplicate_btn,
@@ -466,6 +805,13 @@ class GeometryPanel(QWidget):
         one_atom = self._editing and count == 1
         for spin in self._coord_boxes:
             spin.setEnabled(one_atom)
+
+
+class _CompactList(QListWidget):
+    """A list that asks for a few rows and takes whatever height is spare."""
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt's name
+        return QSize(super().sizeHint().width(), _LIST_HINT_HEIGHT)
 
 
 def _table_icon() -> QIcon:

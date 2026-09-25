@@ -327,8 +327,13 @@ def test_the_position_boxes_do_not_widen_the_dock(qapp):
     """Regression: a box wide enough for "-1000.0000" made the panel's preferred
     width ~465px, and a dock takes its width from that — the Geometry dock came
     out wider than the 3D view beside it. The boxes must not drive it."""
-    with_boxes = GeometryPanel(_nacl()).sizeHint().width()
-    assert with_boxes <= 360  # the panel's own width before the boxes existed
+    from PySide6.QtWidgets import QScrollArea
+
+    panel = GeometryPanel(_nacl())
+    # the panel's own width before the boxes existed, plus the scroll bar the
+    # panel now keeps room for
+    scroll_bar = panel.findChild(QScrollArea).verticalScrollBar().sizeHint().width()
+    assert panel.sizeHint().width() <= 360 + scroll_bar
 
 
 def test_a_typed_position_moves_the_periodic_images_too(qapp):
@@ -372,3 +377,143 @@ def test_a_typed_position_moves_the_periodic_images_too(qapp):
         assert structure.positions[2] == pytest.approx([2.5, 0.0, 0.0])   # untouched
     finally:
         plotter.close()
+
+
+# ── lattice planes (hkl) ──────────────────────────────────────────────────
+def _type_miller(panel, h, k, l):
+    for spin, value in zip(panel._miller_boxes, (h, k, l)):
+        spin.setValue(value)
+
+
+def _plane_panel():
+    structure = _nacl()
+    panel = GeometryPanel(structure)
+    panel.set_miller_cell(np.asarray(structure.cell))
+    drawn = []
+    panel.lattice_planes_changed.connect(lambda planes, cell: drawn.append((planes, cell)))
+    return panel, structure, drawn
+
+
+def test_a_plane_is_drawn_from_its_indices_alone(qapp):
+    panel, structure, drawn = _plane_panel()
+    _type_miller(panel, 1, 1, 1)
+    assert panel._spacing_label.text() == "d 3.256 Å"
+    panel._plane_offset.setValue(0.5)
+    panel._add_plane_btn.click()                   # no atom selected, nothing fitted
+
+    (plane,) = panel.lattice_planes()
+    assert plane.miller == (1, 1, 1) and plane.offset == 0.5 and not plane.family
+    planes, cell = drawn[-1]
+    assert planes == [plane] and np.allclose(cell, structure.cell)
+    assert panel._plane_list.item(0).text() == "(1 1 1) at 0.50 d · d 3.256 Å · 3 atoms"  # Cl on a, b, c at ½
+
+
+def test_a_plane_through_the_selected_atom_passes_through_it(qapp):
+    from crystalline.core import lattice_planes as lp
+
+    panel, structure, _drawn = _plane_panel()
+    _type_miller(panel, 1, 1, 1)
+    assert not panel._plane_atom_btn.isEnabled()   # needs exactly one atom
+    panel.set_selection([1, 2])
+    assert not panel._plane_atom_btn.isEnabled()
+    panel.set_selection([1])
+    assert panel._plane_atom_btn.isEnabled()
+    panel._plane_atom_btn.click()
+
+    (plane,) = panel.lattice_planes()
+    assert plane.offset == pytest.approx(0.5)      # Cl at (½ 0 0): h x + k y + l z = ½
+    assert panel._plane_offset.value() == pytest.approx(0.5)
+    assert 1 in lp.atoms_on(np.asarray(structure.cell), plane, structure.positions)
+
+
+def test_a_family_and_the_atoms_on_it_can_be_selected(qapp):
+    panel, structure, _drawn = _plane_panel()
+    _type_miller(panel, 1, 1, 1)
+    panel._family_check.setChecked(True)
+    panel._plane_offset.setValue(0.5)
+    panel._add_plane_btn.click()
+    assert panel.lattice_planes()[0].family
+    assert "family +0.50 d" in panel._plane_list.item(0).text()
+
+    chosen = []
+    panel.select_atoms_requested.connect(chosen.append)
+    assert not panel._plane_select_btn.isEnabled()  # a plane has to be picked in the list
+    panel._plane_list.item(0).setSelected(True)
+    panel._plane_select_btn.click()
+    assert chosen and {structure.symbols[i] for i in chosen[0]} == {"Cl"} and len(chosen[0]) == 4
+
+
+def test_each_plane_gets_its_own_colour_and_unticking_hides_it(qapp):
+    panel, _structure, drawn = _plane_panel()
+    _type_miller(panel, 1, 0, 0)
+    panel._add_plane_btn.click()
+    _type_miller(panel, 0, 1, 0)
+    panel._add_plane_btn.click()
+    first, second = panel.lattice_planes()
+    assert first.color and second.color and first.color != second.color
+
+    panel._plane_list.item(0).setCheckState(Qt.Unchecked)
+    assert drawn[-1][0] == [second]
+    assert panel.lattice_planes() == [first, second]  # hidden, not deleted
+
+
+def test_recolouring_and_removing_planes(qapp, monkeypatch):
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QColorDialog
+
+    panel, _structure, drawn = _plane_panel()
+    panel._add_plane_btn.click()
+    panel._add_plane_btn.click()
+    panel._plane_list.item(1).setSelected(True)
+    monkeypatch.setattr(QColorDialog, "getColor", staticmethod(lambda *a, **k: QColor("#123456")))
+    panel._plane_colour_btn.click()
+    assert panel.lattice_planes()[1].color == "#123456"
+    assert drawn[-1][0][1].color == "#123456"
+
+    panel._plane_remove_btn.click()
+    assert len(panel.lattice_planes()) == 1
+    panel.clear_lattice_planes()
+    assert panel.lattice_planes() == [] and drawn[-1][0] == []
+
+
+def test_zero_indices_name_no_plane(qapp):
+    panel, _structure, _drawn = _plane_panel()
+    _type_miller(panel, 0, 0, 0)
+    assert not panel._add_plane_btn.isEnabled()
+    assert panel._spacing_label.text() == "d —"
+
+
+def test_hexagonal_planes_are_written_with_four_indices(qapp):
+    from ase.build import bulk
+
+    zinc = bulk("Zn", "hcp", a=2.66, c=4.95)
+    panel = GeometryPanel(Structure.from_ase(zinc))
+    panel.set_miller_cell(zinc.cell[:])
+    _type_miller(panel, 1, 0, 0)
+    assert not panel._i_label.isHidden() and panel._i_label.text() == "i -1"
+    assert "(h k i l)" in panel._plane_hint.text()
+    panel._add_plane_btn.click()
+    assert panel._plane_list.item(0).text().startswith("(1 0 -1 0) at 0.00 d")
+
+    panel.set_miller_cell(np.asarray(_nacl().cell))
+    assert panel._i_label.isHidden()
+
+
+def test_planes_outlive_a_change_of_view_but_not_of_crystal(qapp):
+    panel, structure, drawn = _plane_panel()
+    panel._add_plane_btn.click()
+    bigger = Structure.from_ase(structure.to_ase().repeat((2, 2, 2)))
+    panel.set_structure(bigger)                      # a supercell, say
+    panel.set_miller_cell(np.asarray(structure.cell))
+    assert len(panel.lattice_planes()) == 1 and len(drawn[-1][0]) == 1
+    assert panel._plane_list.item(0).text().endswith("· 16 atoms")  # recounted on the supercell
+    panel.clear_lattice_planes()                     # what a new file does
+    assert panel.lattice_planes() == []
+
+
+def test_a_molecule_offers_no_lattice_planes(qapp):
+    panel = GeometryPanel(_water())
+    panel.set_miller_cell(None)
+    assert panel._plane_hint.text() == "A molecule has no lattice planes."
+    assert not panel._add_plane_btn.isEnabled()
+    assert not panel._miller_boxes[0].isEnabled()

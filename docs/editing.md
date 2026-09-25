@@ -56,3 +56,22 @@ The **Geometry** panel measures the current selection:
 
 Measurements remain drawn in the view and can be coloured individually or by
 type.
+
+## Lattice planes
+
+A crystallographic plane is drawn from its Miller indices, with no atoms
+selected, in the **Lattice planes (hkl)** part of the Geometry panel. The
+indices are quoted in the conventional cell — the one named above the boxes,
+the same as for a density slice — whatever cell, primitive view or supercell is
+on screen; hexagonal and trigonal crystals are written with four indices
+(*h k i l*), *i* = −(*h* + *k*) following from the other two.
+
+The plane is placed either at a **position** along its normal, in units of the
+interplanar spacing *d*(hkl) from the plane through the origin — 0 and 1 are
+neighbouring planes, 0.5 lies halfway between — or **through the selected
+atom**. **Whole family** draws every plane of the family across the cell on
+screen, *d*(hkl) apart. Each plane is drawn where it cuts the displayed cell
+(for a slab, the layer and 1 Å either side of it) and is listed with *d*(hkl)
+and the number of atoms lying on it, within 0.1 Å; **Select atoms** selects
+them, ready to be measured. Planes are kept through a change of view or
+supercell and cleared when another file is opened.

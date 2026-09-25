@@ -1388,3 +1388,87 @@ def test_an_atom_added_to_a_drawn_structure_reaches_the_viewport():
 
     assert renderer._atom_mesh_obj.n_points > before
     assert chemical_symbols[111] == "Rg"
+
+
+# ── lattice planes (hkl) ──────────────────────────────────────────────────
+def _plane_sheets(renderer):
+    """The filled sheets drawn (each plane is a sheet plus its outline)."""
+    return renderer._lattice_plane_actors[::2]
+
+
+def test_a_lattice_plane_is_drawn_and_survives_a_rebuild():
+    from crystalline.core.lattice_planes import LatticePlane
+
+    nacl = bulk("NaCl", "rocksalt", a=5.64, cubic=True)
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(Structure.from_ase(nacl))
+    assert renderer._lattice_plane_actors == []
+
+    renderer.set_lattice_planes([LatticePlane((1, 1, 1), 0.5)], nacl.cell[:])
+    assert len(_plane_sheets(renderer)) == 1
+    renderer.set_settings(RenderSettings(show_bonds=False))   # a rebuild clears the plotter
+    assert len(_plane_sheets(renderer)) == 1
+    for actor in renderer._lattice_plane_actors:
+        assert actor.GetPickable() == 0                         # atoms stay the pick target
+
+    renderer.set_lattice_planes([], nacl.cell[:])
+    assert renderer._lattice_plane_actors == []
+
+
+def test_a_family_fills_the_cell_on_screen_and_a_supercell_holds_more():
+    from crystalline.core.lattice_planes import LatticePlane
+
+    nacl = bulk("NaCl", "rocksalt", a=5.64, cubic=True)
+    cell = nacl.cell[:]
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(Structure.from_ase(nacl))
+    renderer.set_lattice_planes([LatticePlane((1, 1, 1), 0.5, family=True)], cell)
+    assert len(_plane_sheets(renderer)) == 3                    # x+y+z = 0.5, 1.5, 2.5 a
+    # indices stay in the unit cell when a 2×2×2 supercell is shown
+    renderer.set_structure(Structure.from_ase(nacl.repeat((2, 2, 2))))
+    assert len(_plane_sheets(renderer)) == 6
+    sheet = renderer._lattice_plane_actors[0].GetMapper().GetInput()
+    assert np.array(sheet.GetBounds()).reshape(3, 2)[:, 1].max() <= 2 * 5.64 + 1e-6
+
+
+def test_a_plane_takes_its_own_colour():
+    from crystalline.core.lattice_planes import LatticePlane
+
+    nacl = bulk("NaCl", "rocksalt", a=5.64, cubic=True)
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(Structure.from_ase(nacl))
+    renderer.set_lattice_planes([LatticePlane((0, 0, 1), 0.5, color="#3182bd")], nacl.cell[:])
+    colour = renderer._lattice_plane_actors[0].GetProperty().GetColor()
+    assert colour == pytest.approx((0x31 / 255, 0x82 / 255, 0xBD / 255), abs=1e-3)
+
+
+def test_a_slab_draws_planes_across_its_layer_not_its_vacuum():
+    from ase.build import fcc111
+
+    from crystalline.core.lattice_planes import LatticePlane
+
+    slab = fcc111("Pt", size=(2, 2, 3), vacuum=0.0)
+    cell = np.asarray(slab.get_cell(), dtype=float)
+    cell[2] = [0.0, 0.0, 500.0]                                 # CRYSTAL's aperiodic placeholder
+    slab.set_cell(cell)
+    slab.pbc = (True, True, False)
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(Structure.from_ase(slab))
+    origin, vectors = renderer.lattice_region()
+    heights = slab.positions[:, 2]
+    assert origin[2] == pytest.approx(heights.min() - 1.0)
+    assert np.linalg.norm(vectors[2]) == pytest.approx(heights.max() - heights.min() + 2.0)
+    renderer.set_lattice_planes([LatticePlane((1, 0, 0), family=True)], None)
+    sheet = renderer._lattice_plane_actors[0].GetMapper().GetInput()
+    assert np.ptp(np.array(sheet.GetBounds()).reshape(3, 2)[2]) < 10.0
+
+
+def test_a_molecule_has_no_lattice_planes():
+    from crystalline.core.lattice_planes import LatticePlane
+
+    water = Structure.from_ase(Atoms("H2O", positions=[(0, 0, 0), (0.96, 0, 0), (-0.24, 0.93, 0)]))
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(water)
+    assert renderer.lattice_region() is None
+    renderer.set_lattice_planes([LatticePlane((1, 0, 0))], None)
+    assert renderer._lattice_plane_actors == []
