@@ -28,6 +28,28 @@ layer group requires *a* alone — and only the symmetry-inequivalent atoms. Whe
 the symmetry cannot be determined, the deck is written in group 1 with all
 atoms listed.
 
+A crystal can be written in either of the two cells the Info panel offers
+([Symmetry](symmetry.md#which-cell-is-described)), chosen with **Cell** under
+**Reduce to the asymmetric unit**; the builder starts on the Info panel's
+choice. The line beneath the box says which cell and setting the deck is in.
+
+| Cell | Deck |
+| --- | --- |
+| **As computed** | the cell drawn in the 3D view, in its own setting: `1 0 0` / `P 1 21/N 1` / a, b, c, β for a P2₁/n crystal |
+| **Standard (pymatgen)** | pymatgen's conventional standard cell: `0 0 0` / `14` / its a, b, c, β |
+
+The setting is named as the CRYSTAL manual prescribes (geometry input,
+`IFLAG IFHR IFSO`): by its number when the cell is in the standard setting of
+the International Tables, and otherwise by its Hermann–Mauguin symbol — a
+monoclinic group in full (`P 1 1 21/A` for the c axis unique), the five groups
+renamed with an `e` glide in 2016 by their older names (`C M C A`). `IFSO`
+follows the origin choice of the coordinates, since CRYSTAL reads `0` as the
+second origin setting and `1` as the first, and `IFHR` is set for a
+rhombohedral group on rhombohedral axes. Before anything is written, the
+setting's operations are applied to the atoms listed and must give back the
+crystal on screen. A computed cell that is not a conventional cell of its group
+is written in the standard cell instead, and the note says so.
+
 A [reduced symmetry](symmetry.md#reducing-the-symmetry), if one has been
 chosen, is used here.
 

@@ -5,14 +5,20 @@ the structure via :func:`crystalline.core.crystallography.analyze`), plus what
 the CRYSTAL ``.out`` file says about itself — how the run was set up (code,
 task, functional, k-point mesh, basis size, SCF thresholds) and what it
 computed (energy, band gap, Fermi energy).
+
+A crystal can be described in its own cell, as computed, or in pymatgen's
+standard conventional cell — two sets of lattice parameters for one crystal
+whenever the calculation was run in a non-standard setting (P2₁/n rather than
+P2₁/c, say). The **Cell** box at the top chooses which one the rows describe.
 """
 
 from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QFormLayout,
     QGroupBox,
     QLabel,
@@ -21,15 +27,30 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from crystalline.core.cell_setting import CELL_CHOICES, DEFAULT_CHOICE
 from crystalline.core.crystallography import analyze
 from crystalline.core.structure import Structure
+
+_CELL_TOOLTIP = (
+    "Which cell the lattice parameters describe.\n\n"
+    "As computed: the cell the calculation used (the one drawn in the 3D view), "
+    "with the space group named in that cell's setting — P2₁/n stays P2₁/n.\n"
+    "Standard (pymatgen): pymatgen's conventional standard cell, which can be a "
+    "different setting of the same group, with other lattice parameters."
+)
+_CELL_TOOLTIP_NA = "Only a 3D crystal has a choice of cell to describe it in."
 
 
 class InfoPanel(QWidget):
     """Read-only crystallographic + CRYSTAL-output summary."""
 
+    #: The Cell box was changed by the user: ``"computed"`` or ``"standard"``.
+    cell_choice_changed = Signal(str)
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        self._structure: Optional[Structure] = None
+        self._props: dict = {}
         # A CRYSTAL run reports a couple of dozen rows between the two groups —
         # more than a dock is tall — so the whole summary scrolls rather than
         # forcing the dock wider or clipping the last rows.
@@ -43,6 +64,18 @@ class InfoPanel(QWidget):
         content = QWidget()
         self._scroll.setWidget(content)
         layout = QVBoxLayout(content)
+
+        # Above the rows it governs, where a change is seen to change them.
+        self._cell = QComboBox()
+        for key, label in CELL_CHOICES:
+            self._cell.addItem(label, key)
+        self._cell.setCurrentIndex(self._cell.findData(DEFAULT_CHOICE))
+        self._cell.setToolTip(_CELL_TOOLTIP)
+        self._cell.currentIndexChanged.connect(self._on_cell_changed)
+        choice = QFormLayout()
+        choice.setContentsMargins(0, 0, 0, 0)
+        choice.addRow("Cell:", self._cell)
+        layout.addLayout(choice)
 
         self._crystal_group = QGroupBox("Crystallography")
         self._crystal_form = _form(self._crystal_group)
@@ -58,19 +91,62 @@ class InfoPanel(QWidget):
 
     # ── public API ──────────────────────────────────────────────────────
     def show_structure(self, structure: Structure, output_props: Optional[dict] = None) -> None:
-        """Analyse ``structure`` and display it, with optional CRYSTAL-output rows."""
+        """Analyse ``structure`` and display it, with optional CRYSTAL-output rows.
+
+        ``structure`` should be one clean cell — the cell on screen folded back
+        from any supercell or boundary images — since "as computed" describes
+        exactly the cell it is handed.
+        """
         if structure is None or len(structure) == 0:
             self.clear()
             return
-        _fill(self._crystal_form,
-              _with_reduction(analyze(structure).rows(), structure))
-        props = output_props or {}
-        _fill(self._output_form, list(props.items()))
-        self._output_group.setVisible(bool(props))
+        self._structure = structure
+        self._props = dict(output_props or {})
+        self._render()
+
+    def cell_choice(self) -> str:
+        """``"computed"`` or ``"standard"`` — what the Cell box is set to."""
+        return str(self._cell.currentData())
+
+    def set_cell_choice(self, choice: str) -> None:
+        """Set the Cell box without announcing it (it is not the user's doing)."""
+        index = self._cell.findData(choice)
+        if index < 0 or index == self._cell.currentIndex():
+            return
+        blocked = self._cell.blockSignals(True)
+        self._cell.setCurrentIndex(index)
+        self._cell.blockSignals(blocked)
+        self._render()
 
     def clear(self) -> None:
+        self._structure = None
+        self._props = {}
         _fill(self._crystal_form, [("", "No structure loaded")])
         self._output_group.setVisible(False)
+        self._sync_cell_box()
+
+    # ── internals ───────────────────────────────────────────────────────
+    def _on_cell_changed(self, _index: int) -> None:
+        self._render()
+        self.cell_choice_changed.emit(self.cell_choice())
+
+    def _render(self) -> None:
+        self._sync_cell_box()
+        structure = self._structure
+        if structure is None:
+            return
+        info = analyze(structure, cell=self.cell_choice())
+        _fill(self._crystal_form, _with_reduction(info.rows(), structure))
+        _fill(self._output_form, list(self._props.items()))
+        self._output_group.setVisible(bool(self._props))
+
+    def _sync_cell_box(self) -> None:
+        """Offer the choice only where there is one: a 3D crystal."""
+        structure = self._structure
+        crystal = (structure is not None and len(structure) > 0
+                   and bool(structure.is_periodic) and bool(all(structure.pbc)))
+        self._cell.setEnabled(crystal)
+        self._cell.setToolTip(_CELL_TOOLTIP if crystal else _CELL_TOOLTIP_NA)
 
 
 def _with_reduction(rows: List[Tuple[str, str]],

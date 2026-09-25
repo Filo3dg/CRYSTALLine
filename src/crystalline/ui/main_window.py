@@ -159,7 +159,14 @@ class MainWindow(QMainWindow):
         # left dock: crystallographic info of the loaded system
         self.info_panel = InfoPanel(self)
         info_dock = self._info_dock = self._dock("Info", self.info_panel, Qt.LeftDockWidgetArea)
-        self.info_panel.show_structure(self._source)
+        # Which cell the panel describes — the one computed, or pymatgen's
+        # standard one — is remembered between sessions, and it is also where
+        # the input builder starts.
+        from crystalline.ui import preferences
+
+        self.info_panel.set_cell_choice(preferences.cell_choice())
+        self.info_panel.cell_choice_changed.connect(preferences.set_cell_choice)
+        self.info_panel.show_structure(self._analysis_cell())
 
         # left dock (tabbed behind Info): live display settings.
         self.display_panel = DisplayPanel(
@@ -1697,7 +1704,7 @@ class MainWindow(QMainWindow):
             return
         self._source.set_lattice_parameters(*(box.value() for box in boxes))
         self._apply_cell_view()
-        self.info_panel.show_structure(self._source, self._output_props)
+        self.info_panel.show_structure(self._analysis_cell(), self._output_props)
 
     def _open_supercell_dialog(self) -> None:
         """Prompt for the na × nb × nc repetitions and rebuild the view.
@@ -2053,7 +2060,12 @@ class MainWindow(QMainWindow):
         return True
 
     def _update_info(self, path: str) -> None:
-        """Refresh the crystallographic info panel for the loaded system."""
+        """Refresh the crystallographic info panel for the loaded system.
+
+        Described on the cell on screen, folded to one cell — not on the file's
+        primitive cell — so that "as computed" means the cell the 3D view draws,
+        and so that the panel says the same thing before an edit as after one.
+        """
         props = {}
         try:
             from crystalline.crystalio import output_properties
@@ -2062,7 +2074,7 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001 - never let output parsing break loading
             props = {}
         self._output_props = props or {}
-        self.info_panel.show_structure(self._source, self._output_props)
+        self.info_panel.show_structure(self._analysis_cell(), self._output_props)
 
     def _refresh_info(self) -> None:
         """Re-analyse the shown structure so the Info panel tracks geometry edits.
@@ -2127,7 +2139,16 @@ class MainWindow(QMainWindow):
             return
         from crystalline.ui.panels.input_builder import InputBuilderDialog
 
-        InputBuilderDialog(structure, self).exec()
+        # The builder starts on the cell the Info panel is showing; changing it
+        # there is for that one deck and is not remembered.
+        panel = getattr(self, "info_panel", None)
+        if panel is not None:
+            choice = panel.cell_choice()
+        else:
+            from crystalline.ui import preferences
+
+            choice = preferences.cell_choice()
+        InputBuilderDialog(structure, self, cell_choice=choice).exec()
 
     def _build_properties_input(self) -> None:
         """Open the PROPERTIES (``.d3``) builder for the structure as edited.

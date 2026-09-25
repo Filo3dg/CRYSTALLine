@@ -75,10 +75,12 @@ from crystalline.core.crystal_input import (
     TaskOptions,
     TwoComponentOptions,
     build_input,
+    geometry_note,
     suggest_shrink,
     tolinteg_warnings,
     write_input,
 )
+from crystalline.core.cell_setting import CELL_CHOICES, DEFAULT_CHOICE
 from crystalline.core.structure import Structure
 from crystalline.ui.panels.band_path_editor import BandPathEditor
 from crystalline.ui.panels.controls import plain_spin
@@ -273,10 +275,14 @@ class _SupercellGroup(QGroupBox):
 class InputBuilderDialog(QDialog):
     """Build and save a CRYSTAL ``.d12`` deck for ``structure``."""
 
-    def __init__(self, structure: Structure, parent=None) -> None:
+    def __init__(self, structure: Structure, parent=None,
+                 cell_choice: str = DEFAULT_CHOICE) -> None:
         super().__init__(parent)
         self.setWindowTitle("Build CRYSTAL input")
         self._structure = structure
+        # Which cell a crystal is written in; where the Info panel stands, unless
+        # changed here for this deck.
+        self._initial_cell = cell_choice
         self._technique_before_raman: Optional[int] = None
         self._syncing = False
 
@@ -407,6 +413,28 @@ class InputBuilderDialog(QDialog):
         self._symmetry = QCheckBox("Reduce to the asymmetric unit")
         self._symmetry.setChecked(True)
         form.addRow(self._symmetry)
+
+        # The same crystal can be written in the cell it was computed in or in
+        # pymatgen's standard one, and for a non-standard setting (P2₁/n, Pbnm)
+        # the two decks differ in the group symbol, the cell and every
+        # coordinate — so the choice is the user's, and the note says which
+        # was actually written.
+        self._cell = QComboBox()
+        for key, label in CELL_CHOICES:
+            self._cell.addItem(label, key)
+        index = self._cell.findData(self._initial_cell)
+        self._cell.setCurrentIndex(index if index >= 0 else self._cell.findData(DEFAULT_CHOICE))
+        self._cell.setToolTip(
+            "As computed: the cell on screen, in the setting of its space group that "
+            "cell is in — a P2₁/n crystal is written as P 1 21/N 1 with its own cell.\n"
+            "Standard (pymatgen): pymatgen's conventional standard cell, written by "
+            "space-group number whenever that cell is in the standard setting."
+        )
+        form.addRow("Cell", self._cell)
+        self._cell_note = QLabel()
+        self._cell_note.setWordWrap(True)
+        self._cell_note.setStyleSheet("color: palette(mid);")
+        form.addRow(self._cell_note)
 
         form.addRow(_gap())
         self._supercel = _SupercellGroup(title="Supercell (SUPERCEL)")
@@ -960,6 +988,7 @@ class InputBuilderDialog(QDialog):
         for combo in (self._functional, self._exchange, self._correlation):
             combo.editTextChanged.connect(self._refresh_preview)
             combo.currentIndexChanged.connect(self._refresh_preview)
+        self._cell.currentIndexChanged.connect(self._refresh_preview)
 
         # the spin sub-controls gate each other, so they go through
         # _on_form_changed (which re-runs the enable rules) rather than a plain
@@ -970,8 +999,11 @@ class InputBuilderDialog(QDialog):
         for box in (self._spinlock_nspin, self._spinlock_ncyc):
             box.valueChanged.connect(self._refresh_preview)
 
+        # Symmetry on or off decides whether there is a cell to choose, so it
+        # re-runs the enable rules rather than only the preview.
+        self._symmetry.toggled.connect(self._on_form_changed)
         checks = [
-            self._d3, self._symmetry, self._preopt,
+            self._d3, self._preopt,
             self._freq_irspec, self._freq_ramspec, self._freq_analysis,
             self._freq_print, self._freq_restart, self._el_clampion,
             self._disp_noksym, self._disp_interp_print, self._disp_pdos_proj,
@@ -1085,6 +1117,11 @@ class InputBuilderDialog(QDialog):
         self._task_pages.setCurrentIndex(self._task.currentIndex())
         self._preopt.setEnabled(kind in _EQUILIBRIUM_TASKS)
         self._shrink.setEnabled(self._structure.is_periodic)
+        # A choice of cell exists only for a 3D crystal written with its
+        # symmetry, and a reduced symmetry is always written in the standard cell.
+        crystal = bool(self._structure.is_periodic) and bool(all(self._structure.pbc))
+        self._cell.setEnabled(crystal and self._symmetry.isChecked()
+                              and not tuple(self._structure.reduced_symmetry))
 
         # Raman implies IR through CPHF, so those controls stop being free choices.
         raman = self._freq_raman.isChecked()
@@ -1216,6 +1253,7 @@ class InputBuilderDialog(QDialog):
                 kept_rotations=tuple(self._structure.reduced_symmetry),
                 supercell=self._supercel.matrix(),
                 supercell_noshift=self._supercel_noshift.isChecked(),
+                cell_setting=str(self._cell.currentData()),
             ),
             basis=BasisOptions(name=self._basis.currentText()),
             method=MethodOptions(
@@ -1403,11 +1441,16 @@ class InputBuilderDialog(QDialog):
         self._tolinteg_warning.setText(warning)
         self._tolinteg_warning.setVisible(bool(warning))
         try:
-            self._preview.setPlainText(build_input(self._structure, self._spec()))
+            spec = self._spec()
+            self._preview.setPlainText(build_input(self._structure, spec))
             self._save_btn.setEnabled(True)
         except CrystalInputError as exc:
             self._preview.setPlainText(f"⚠  {exc}")
             self._save_btn.setEnabled(False)
+            return
+        note = geometry_note(self._structure, spec.geometry)
+        self._cell_note.setText(note)
+        self._cell_note.setVisible(bool(note))
 
     # ── save ────────────────────────────────────────────────────────────
     def _save(self) -> None:

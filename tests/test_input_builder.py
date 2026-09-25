@@ -589,7 +589,7 @@ def test_build_crystal_input_hands_the_dialog_the_edited_geometry(monkeypatch):
     handed = []
 
     class _FakeDialog:
-        def __init__(self, structure, parent=None):
+        def __init__(self, structure, parent=None, **_options):
             handed.append(structure)
 
         def exec(self):

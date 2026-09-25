@@ -15,6 +15,28 @@ The panel also reports the point group, the lattice parameters, the cell volume
 or area, the density and the formula. All of them are recomputed when the
 structure is edited.
 
+### Which cell is described
+
+A space group can be written in several settings, and a crystal computed in a
+non-standard one has lattice parameters its standard description does not
+share. A P2₁/n crystal with c = 8.97 Å and β = 105.5° is, in the standard
+P2₁/c setting, a cell with c = 10.43 Å and β = 124.1°: the same crystal, the
+same volume, another cell.
+
+The **Cell** box at the top of the Info panel chooses between the two:
+
+| Cell | What the panel reports |
+| --- | --- |
+| **As computed** | the cell drawn in the 3D view, with the space group named in that cell's own setting (P2₁/n) |
+| **Standard (pymatgen)** | pymatgen's conventional standard cell, with the group's standard symbol (P2₁/c) |
+
+The choice is remembered between sessions, and the
+[CRYSTAL input builder](inputs.md#the-geometry-block) starts on it. If the cell
+on screen is not a conventional cell of its group — the primitive cell of a
+centred lattice, shown with **CONV. CELL** off — the panel reports it as it is
+and says so under **Cell**. The choice applies to crystals only: a slab is
+always described by its layer group and in-plane cell.
+
 ## Point symmetry analysis
 
 **Cell → Point symmetry analysis** lists the symmetry elements of the structure
