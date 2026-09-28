@@ -267,25 +267,6 @@ def test_a_signed_field_keeps_zero_in_the_middle_of_the_map():
     assert low == -high
 
 
-# ── lattice planes (hkl) ─────────────────────────────────────────────────
-def test_miller_indices_give_the_textbook_normal_and_spacing():
-    cubic = 4.21 * np.eye(3)
-    hexagonal = np.array([[2.29, 0.0, 0.0], [-1.145, 1.9832, 0.0], [0.0, 0.0, 3.59]])
-
-    _p, normal, spacing = D.miller_plane(cubic, (0, 0, 1))
-    assert np.allclose(normal, [0, 0, 1]) and np.isclose(spacing, 4.21)
-    assert np.isclose(D.miller_plane(cubic, (1, 1, 1))[2], 4.21 / np.sqrt(3))
-    assert np.isclose(D.miller_plane(cubic, (2, 0, 0))[2], 4.21 / 2)
-    assert np.isclose(D.miller_plane(hexagonal, (0, 0, 1))[2], 3.59)
-    point, normal, spacing = D.miller_plane(cubic, (0, 0, 1), offset=0.5)
-    assert np.allclose(point, [0, 0, 2.105])
-
-
-def test_a_plane_needs_a_non_zero_index():
-    with pytest.raises(D.DensityError, match="000"):
-        D.miller_plane(np.eye(3), (0, 0, 0))
-
-
 def test_the_field_is_read_periodically_anywhere_in_space():
     """A plane through a crystal runs through many cells; the grid covers one.
     CRYSTAL's grid samples the far face too, and that layer must not be

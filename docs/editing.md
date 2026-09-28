@@ -72,8 +72,9 @@ neighbouring planes, 0.5 lies halfway between — or **through the selected
 atom**. **Whole family** draws every plane of the family across the cell on
 screen, *d*(hkl) apart. Each plane is drawn where it cuts the displayed cell
 (for a slab, the layer and 1 Å either side of it) and is listed with *d*(hkl)
-and the number of atoms lying on it, within 0.1 Å; **Select atoms** selects
-them, ready to be measured. The **Opacity** slider sets how see-through the
+and the number of atoms lying on it, within 0.15 Å — the same test that marks
+atoms on a density slice; **Select atoms** selects them, ready to be measured.
+The **Opacity** slider sets how see-through the
 planes selected in the list are — every plane when none is selected — and the
 opacity new planes are drawn with; at 0 only the outline of a plane is drawn.
 Planes are kept through a change of view or supercell and cleared when another

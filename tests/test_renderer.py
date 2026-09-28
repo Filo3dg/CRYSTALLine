@@ -1504,3 +1504,87 @@ def test_a_plane_is_drawn_at_its_own_opacity_and_restyled_in_place():
     assert renderer._lattice_plane_actors != before
     renderer.set_settings(RenderSettings(show_bonds=False))
     assert [s.GetProperty().GetOpacity() for s in _plane_sheets(renderer)] == pytest.approx([0.6] * 2)
+
+
+# ── the sheet a plane is drawn as ─────────────────────────────────────────
+def _sheet(cell, miller, offset, origin=(0.0, 0.0, 0.0)):
+    from crystalline.core import lattice_planes as lp
+    from crystalline.viz.renderer import _plane_sheet
+
+    point, normal, _d = lp.plane_frame(cell, miller, offset)
+    return _plane_sheet(point, normal, np.asarray(origin, dtype=float), np.asarray(cell))
+
+
+def _corners_of(sheet):
+    """The corners of a flat sheet's outline — not every point along it (the
+    clip leaves some partway along a side, where the square's diagonal met it)."""
+    from scipy.spatial import ConvexHull
+
+    points = np.asarray(sheet.points, dtype=float)
+    centre = points.mean(axis=0)
+    u, _s, _v = np.linalg.svd((points - centre).T)
+    flat = (points - centre) @ u[:, :2]              # the sheet in its own plane
+    hull = flat[ConvexHull(flat).vertices]
+    corners = []
+    for index, here in enumerate(hull):               # drop points where the outline runs straight on
+        before, after = here - hull[index - 1], hull[(index + 1) % len(hull)] - here
+        turn = before[0] * after[1] - before[1] * after[0]
+        if abs(turn) > 1e-3 * np.linalg.norm(before) * np.linalg.norm(after):
+            corners.append(here)
+    return np.asarray(corners)
+
+
+def test_a_cube_face_plane_is_a_square_and_a_111_plane_a_hexagon_or_triangle():
+    cell = 4.0 * np.eye(3)
+    square = _sheet(cell, (0, 0, 1), 0.25)
+    assert square.area == pytest.approx(16.0, rel=1e-5) and np.allclose(square.points[:, 2], 1.0)
+    assert len(_corners_of(square)) == 4
+    hexagon = _sheet(cell, (1, 1, 1), 1.5)
+    assert hexagon.area == pytest.approx(3 * np.sqrt(3) / 2 * 8, rel=1e-5)   # side 2√2
+    assert len(_corners_of(hexagon)) == 6
+    triangle = _sheet(cell, (1, 1, 1), 0.75)
+    assert triangle.area == pytest.approx(np.sqrt(3) / 4 * 18, rel=1e-5)    # side 3√2
+    assert len(_corners_of(triangle)) == 3
+    # through a corner only, or outside altogether: nothing to draw
+    assert _sheet(cell, (1, 1, 1), 0.0) is None
+    assert _sheet(cell, (1, 1, 1), 3.2) is None
+
+
+def test_a_plane_in_a_face_of_the_cell_is_kept():
+    """The planes of a family that fall on the cell's faces — (1 0 0) at 0
+    and 1 — are drawn, not lost to rounding at the clip."""
+    cell = 4.0 * np.eye(3)
+    for offset in (0.0, 1.0):
+        face = _sheet(cell, (1, 0, 0), offset)
+        assert face is not None and face.area == pytest.approx(16.0, rel=1e-5)
+
+
+def test_a_plane_stops_at_the_faces_of_a_slanted_cell():
+    from ase.geometry import cellpar_to_cell
+
+    cell = np.asarray(cellpar_to_cell([8.24, 13.45, 8.97, 90, 105.48, 90]))
+    sheet = _sheet(cell, (0, 0, 1), 0.5)
+    # the (0 0 1) section of a monoclinic cell is the a×b parallelogram, not the
+    # axis-aligned box around the cell
+    assert sheet.area == pytest.approx(np.linalg.norm(np.cross(cell[0], cell[1])), rel=1e-5)
+    fractional = sheet.points @ np.linalg.inv(cell)
+    assert np.all(fractional > -1e-6) and np.all(fractional < 1 + 1e-6)
+    assert np.allclose(fractional[:, 2], 0.5)
+
+
+def test_the_region_can_be_moved_off_the_origin():
+    cell = 4.0 * np.eye(3)
+    origin = (0.0, 0.0, -2.0)
+    sheet = _sheet(cell, (0, 0, 1), -0.25, origin)
+    assert sheet is not None and np.allclose(sheet.points[:, 2], -1.0)
+    assert _sheet(cell, (0, 0, 1), 0.75, origin) is None
+
+
+def test_an_orbital_is_still_clipped_to_its_cell():
+    """The clip the lattice planes now share is the one orbitals always used."""
+    from crystalline.viz.renderer import _clip_to_cell
+
+    sphere = pv.Sphere(radius=3.0, center=(0.0, 0.0, 0.0))
+    clipped = _clip_to_cell(sphere, 2.0 * np.eye(3))
+    low, high = np.array(clipped.bounds).reshape(3, 2).T
+    assert np.all(low >= -1e-6) and np.all(high <= 2.0 + 1e-6)
