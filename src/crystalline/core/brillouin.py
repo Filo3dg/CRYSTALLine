@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from crystalline.core.lattice_planes import reciprocal_lattice
 from crystalline.core.structure import Structure
 
 # The two cells a Brillouin zone can be asked for. They are genuinely different
@@ -86,10 +87,10 @@ def reciprocal_cell(structure: Structure) -> np.ndarray:
     With this convention a k-point's fractional coordinates multiply these rows
     directly, which is how every path in this app is expressed.
     """
-    cell = np.asarray(structure.cell, dtype=float)
-    if cell.shape != (3, 3) or abs(np.linalg.det(cell)) < 1e-12:
-        raise ValueError("This structure has no usable lattice.")
-    return np.linalg.inv(cell).T
+    try:
+        return reciprocal_lattice(structure.cell)
+    except ValueError:
+        raise ValueError("This structure has no usable lattice.") from None
 
 
 def periodic_axes(structure: Structure) -> List[int]:

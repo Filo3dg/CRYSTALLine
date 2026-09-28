@@ -1562,7 +1562,9 @@ class MainWindow(QMainWindow):
         self._density_shown = True
         self._update_density_actions()
         if options.view == density.SLICE:
-            told = f"{field.name} · ({' '.join(str(v) for v in options.miller)}) plane"
+            from crystalline.core.lattice_planes import label
+
+            told = f"{field.name} · {label(options.miller, miller_cell)} plane"
         else:
             told = f"{field.name} · isovalue {options.isovalue:.4g} {field.unit}"
         self.statusBar().showMessage(told, 6000)

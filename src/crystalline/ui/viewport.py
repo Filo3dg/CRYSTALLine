@@ -27,6 +27,7 @@ from pyvistaqt import QtInteractor
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import QWidget, QVBoxLayout
 
+from crystalline.core.lattice_planes import reciprocal_lattice
 from crystalline.core.structure import Structure
 from crystalline.ui import wheel_zoom
 from crystalline.ui.drag_controller import install_atom_drag
@@ -341,11 +342,11 @@ class Viewport(QWidget):
     def _reciprocal_direction(cell, axis: int) -> Optional[np.ndarray]:
         """a*, b* or c* of ``cell`` (0, 1, 2), or ``None`` if the lattice gives none.
 
-        ``a* = (b × c) / V`` and cyclically, which divides by the signed volume
-        so the vector keeps its sense in a left-handed cell. A slab or polymer
-        may come with a zero vector for its aperiodic direction; it is replaced
-        by the normal to the other two first, which is the direction it stands
-        for — so c* of a slab is the view straight down onto the layer.
+        The row of :func:`~crystalline.core.lattice_planes.reciprocal_lattice`,
+        so it keeps its sense in a left-handed cell. A slab or polymer may come
+        with a zero vector for its aperiodic direction; it is replaced by the
+        normal to the other two first, which is the direction it stands for —
+        so c* of a slab is the view straight down onto the layer.
         """
         cell = np.array(cell, dtype=float)
         if cell.shape != (3, 3):
@@ -355,10 +356,10 @@ class Viewport(QWidget):
                 normal = np.cross(cell[(index + 1) % 3], cell[(index + 2) % 3])
                 if np.linalg.norm(normal) > 1e-8:
                     cell[index] = normal
-        volume = float(np.linalg.det(cell))
-        if abs(volume) < 1e-8:
+        try:
+            return reciprocal_lattice(cell)[axis]
+        except ValueError:  # no volume: no reciprocal axis
             return None
-        return np.cross(cell[(axis + 1) % 3], cell[(axis + 2) % 3]) / volume
 
     @staticmethod
     def _up_for(dir_hat: np.ndarray, cell: Optional[np.ndarray], axis: int) -> np.ndarray:

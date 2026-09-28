@@ -34,6 +34,7 @@ from ase.data import chemical_symbols
 from scipy.spatial import cKDTree
 
 from crystalline.core import elements
+from crystalline.core import lattice_planes as lp
 from crystalline.core.structure import Structure
 from crystalline.viz.fonts import unicode_font, use_unicode_font
 from crystalline.viz.render_settings import RenderSettings
@@ -81,6 +82,11 @@ _LATTICE_PLANE_EDGE_SHADE = 0.6
 _LATTICE_PLANE_EDGE_WIDTH = 2.0
 # How far past the atoms a slab's planes reach across the vacuum, in Å.
 _LATTICE_PLANE_SLAB_MARGIN = 1.0
+# A plane this close (Å) to a face of the region counts as inside it — the
+# planes of a family that fall on the cell's faces — and one cutting out less
+# area than this (Å²) only grazes an edge or a corner, and is not drawn.
+_LATTICE_PLANE_FACE_MARGIN = 1e-6
+_LATTICE_PLANE_MIN_AREA = 1e-6
 
 # Coordination-polyhedra outline: only edges where adjacent faces bend by more
 # than this are real polyhedron edges (the rest are the hull's triangulation of
@@ -328,6 +334,7 @@ class StructureRenderer:
         self._density_miller_cell = None
         self._slice_frame = None       # (centre, normal, in-plane up) of a drawn slice
         self._slice_extent = None      # (point, u, w, u range, w range) of its rectangle
+        self._slice_plane = None       # (reference cell, LatticePlane) of a drawn slice
         self._surface_cache = None     # (key, pieces) of the last contoured field
         self._density_bar = None       # title of the field's colour bar, if one is shown
         self._cutaway = None
@@ -1299,46 +1306,50 @@ class StructureRenderer:
             vectors[axis] = direction * (high - low)
         return origin, vectors
 
+    def _miller_reference(self, cell):
+        """The cell Miller indices are read in: ``cell`` — the conventional cell,
+        as given — if it has a volume, else the cell on screen, else ``None``.
+
+        The density slice and the lattice planes both name planes this way, so
+        (hkl) is the same plane in both.
+        """
+        if cell is not None and cell.shape == (3, 3) and abs(np.linalg.det(cell)) > 1e-8:
+            return cell
+        return self._cell_or_none()
+
     def _draw_lattice_planes(self) -> None:
         """(Re)draw the stored lattice planes. Never raises into a redraw."""
-        from crystalline.core import lattice_planes as lp
-
         self._lattice_plane_actors = []
         self._lattice_plane_parts = []
         if not self._lattice_planes:
             return
         region = self.lattice_region()
-        if region is None:
+        reference = self._miller_reference(self._lattice_plane_cell)
+        if region is None or reference is None:
             return
         origin, vectors = region
-        reference = self._lattice_plane_cell
-        if reference is None or reference.shape != (3, 3) or abs(np.linalg.det(reference)) < 1e-8:
-            reference = self._cell_or_none()
-        if reference is None:
-            return
         corners = lp.region_corners(origin, vectors)
         for index, plane in enumerate(self._lattice_planes):
             try:
-                unit = lp.normal(reference, plane.miller)
                 offsets = (lp.offsets_across(reference, plane.miller, plane.offset, corners)
                            if plane.family else [plane.offset])
                 for offset in offsets:
-                    polygon = lp.polygon_in_region(
-                        lp.plane_point(reference, plane.miller, offset), unit, origin, vectors)
-                    if polygon is not None:
-                        self._add_lattice_plane(polygon, index, plane)
+                    point, normal, _spacing = lp.plane_frame(reference, plane.miller, offset)
+                    sheet = _plane_sheet(point, normal, origin, vectors)
+                    if sheet is not None:
+                        self._add_lattice_plane(sheet, index, plane)
             except Exception:  # noqa: BLE001 - one bad plane must not kill the redraw
                 continue
 
-    def _add_lattice_plane(self, polygon: np.ndarray, index: int, plane) -> None:
-        count = len(polygon)
-        mesh = pv.PolyData(polygon, faces=np.hstack([[count], np.arange(count)])).triangulate()
+    def _add_lattice_plane(self, mesh, index: int, plane) -> None:
         sheet = self.plotter.add_mesh(mesh, smooth_shading=False, render=False)
         sheet.SetPickable(False)  # a plane is never a pick target
-        line = pv.PolyData(polygon)
-        line.lines = np.hstack([[count + 1], np.arange(count), [0]])
+        edges = mesh.extract_feature_edges(
+            boundary_edges=True, feature_edges=False,
+            manifold_edges=False, non_manifold_edges=False,
+        )
         outline = self.plotter.add_mesh(
-            line, line_width=_LATTICE_PLANE_EDGE_WIDTH, lighting=False, render=False,
+            edges, line_width=_LATTICE_PLANE_EDGE_WIDTH, lighting=False, render=False,
         )
         outline.SetPickable(False)
         _style_lattice_plane(sheet, outline, plane)
@@ -1571,13 +1582,10 @@ class StructureRenderer:
         """
         from crystalline.crystalio import density as density_module
 
-        reference = self._density_miller_cell
-        if reference is None:
-            reference = self._cell_or_none()
+        reference = self._miller_reference(self._density_miller_cell)
         if reference is None:
             reference = lattice
-        point, normal, _spacing = density_module.miller_plane(
-            reference, options.miller, options.offset)
+        point, normal, _spacing = lp.plane_frame(reference, options.miller, options.offset)
 
         # Two directions in the plane, the first along whichever cell edge lies
         # closest to it, so that a (001) map is drawn square to its a axis.
@@ -1619,6 +1627,7 @@ class StructureRenderer:
         centre = point + 0.5 * (u_low + u_high) * u + 0.5 * (w_low + w_high) * w
         self._slice_frame = (centre, normal, u)
         self._slice_extent = (point, u, w, (u_low, u_high), (w_low, w_high))
+        self._slice_plane = (reference, lp.LatticePlane(options.miller, options.offset))
         return mesh
 
     def _scene_corners(self, lattice, field) -> np.ndarray:
@@ -1629,9 +1638,7 @@ class StructureRenderer:
         cell = self._cell_or_none()
         box = cell if cell is not None else lattice
         origin = np.zeros(3) if cell is not None else field.origin
-        corners = np.array([origin + i * box[0] + j * box[1] + k * box[2]
-                            for i in (0, 1) for j in (0, 1) for k in (0, 1)])
-        points.append(corners)
+        points.append(lp.region_corners(origin, box))
         return np.vstack(points)
 
     def _add_slice_mesh(self, mesh, field, options) -> None:
@@ -1697,11 +1704,12 @@ class StructureRenderer:
         map around each dot stays visible.
         """
         extent = getattr(self, "_slice_extent", None)
+        on = getattr(self, "_slice_plane", None)
         structure = self._structure
-        if extent is None or structure is None or len(structure) == 0:
+        if extent is None or on is None or structure is None or len(structure) == 0:
             return
         point, u, w, (u_low, u_high), (w_low, w_high) = extent
-        normal = np.cross(u, w)
+        normal = np.cross(u, w)     # the plane's own normal: u, then w = normal × u
         positions = np.asarray(structure.positions, dtype=float)
         numbers = np.asarray(structure.numbers, dtype=int)
         cell = self._cell_or_none()
@@ -1725,9 +1733,9 @@ class StructureRenderer:
                                for k in range(low[2], high[2] + 1)]
         images = (positions[None, :, :] + np.asarray(offsets)[:, None, :]).reshape(-1, 3)
         kinds = np.tile(numbers, len(offsets))
-        distance = (images - point) @ normal
+        distance = lp.distances_to(*on, images)
         along, across = (images - point) @ u, (images - point) @ w
-        keep = ((np.abs(distance) < _IN_PLANE)
+        keep = ((np.abs(distance) < lp.ON_PLANE_TOLERANCE)
                 & (along >= u_low) & (along <= u_high)
                 & (across >= w_low) & (across <= w_high))
         if not keep.any():
@@ -2678,8 +2686,6 @@ _MAX_SLICE_POINTS = 400
 # How far behind a slice the cutaway sits, in Angstrom: enough that nothing
 # lying exactly in the plane pokes through it, not enough to be seen.
 _CUTAWAY_BEHIND = 0.02
-# An atom this close to a slice counts as lying in it, and is marked there.
-_IN_PLANE = 0.15
 # A mark's size, as a fraction of the atom's drawn radius.
 _IN_PLANE_MARKER = 0.35
 
@@ -2698,35 +2704,65 @@ def _clip_to_cell(surface, cell):
     but it belongs to neighbouring cells whose atoms are not on screen, so it
     reads as lobes floating in empty space. Clipping keeps the picture to the
     cell that is actually drawn; a supercell is how to see more of the orbital.
-
-    Six half-space clips, one per face. Best-effort: a cell that cannot define
-    them leaves the surface whole rather than losing it.
     """
     if cell is None:
         return surface
-    cell = np.asarray(cell, dtype=float)
-    if cell.shape != (3, 3) or abs(np.linalg.det(cell)) < 1e-8:
+    return _clip_to_region(surface, np.zeros(3), cell)
+
+
+def _clip_to_region(surface, origin, vectors, margin: float = 0.0):
+    """Cut ``surface`` back to the parallelepiped at ``origin`` spanned by ``vectors``.
+
+    Six half-space clips, one per face. A face's normal is not its edge unless
+    the cell is orthogonal: the one through ``vectors[i]`` is along the
+    reciprocal vector of that axis, which also points out of the region on
+    that side. ``margin`` (Å) moves every face outward, so that a lattice plane
+    lying exactly in a face is kept rather than lost to rounding.
+
+    Best-effort: a region that cannot define its faces leaves the surface whole
+    rather than losing it.
+    """
+    try:
+        outward = lp.reciprocal_lattice(vectors)
+    except ValueError:
         return surface
+    origin = np.asarray(origin, dtype=float)
+    vectors = np.asarray(vectors, dtype=float)
     try:
         for axis in range(3):
-            # The face's outward normal is perpendicular to the other two edges,
-            # which is not the edge direction itself unless the cell is orthogonal.
-            normal = np.cross(cell[(axis + 1) % 3], cell[(axis + 2) % 3])
-            length = np.linalg.norm(normal)
-            if length < 1e-12:
-                return surface
-            normal = normal / length
-            if np.dot(normal, cell[axis]) < 0:
-                normal = -normal  # point it out of the cell, not into it
-            # pyvista's invert=True keeps what lies *below* the plane. The cell
-            # is above the face at the origin and below the one at cell[axis].
-            for origin, invert in ((np.zeros(3), False), (cell[axis], True)):
-                surface = surface.clip(normal=normal, origin=origin, invert=invert)
+            normal = outward[axis] / np.linalg.norm(outward[axis])
+            # pyvista's invert=True keeps what lies *below* the plane. The region
+            # is above the face at the origin and below the one at vectors[axis].
+            for base, invert, push in ((origin, False, -margin),
+                                       (origin + vectors[axis], True, margin)):
+                surface = surface.clip(normal=normal, origin=base + push * normal,
+                                       invert=invert)
                 if surface.n_points == 0:
                     return surface
-    except Exception:  # noqa: BLE001 - purely cosmetic; never lose the orbital
+    except Exception:  # noqa: BLE001 - purely cosmetic; never lose the surface
         return surface
     return surface
+
+
+def _plane_sheet(point, normal, origin, vectors):
+    """The part of the plane through ``point`` (normal ``normal``) inside a region.
+
+    A square in the plane large enough to cover the region, cut back by
+    :func:`_clip_to_region` — so a plane in a slanted cell stops at the cell's
+    own faces rather than filling the box around it. ``None`` when the plane
+    misses the region, or only grazes an edge or a corner of it.
+    """
+    corners = lp.region_corners(origin, vectors)
+    centre = corners.mean(axis=0)
+    normal = np.asarray(normal, dtype=float)
+    foot = centre - normal * float((centre - np.asarray(point, dtype=float)) @ normal)
+    size = 2.0 * float(np.linalg.norm(corners - centre, axis=1).max()) + 1.0
+    square = pv.Plane(center=foot, direction=normal, i_size=size, j_size=size,
+                      i_resolution=1, j_resolution=1)
+    sheet = _clip_to_region(square, origin, vectors, margin=_LATTICE_PLANE_FACE_MARGIN)
+    if sheet.n_cells == 0 or float(sheet.area) < _LATTICE_PLANE_MIN_AREA:
+        return None
+    return sheet
 
 
 def _sphere_radius(z, scale: float = _ATOM_SCALE):

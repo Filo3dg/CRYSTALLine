@@ -42,7 +42,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -50,6 +49,7 @@ from PySide6.QtWidgets import (
 from crystalline.core import lattice_planes as lp
 from crystalline.core import measure as measure_mod
 from crystalline.core.structure import Structure
+from crystalline.ui.widgets.miller import MillerIndices
 
 # Same starter palette the (hidden) structure panel used; free text is allowed.
 _ELEMENTS = ["H", "C", "N", "O", "F", "Si", "P", "S", "Cl", "Na", "Mg", "Al", "Ca", "Ti", "Fe"]
@@ -68,11 +68,7 @@ _COORD_EPS = 1e-9
 # ignored entirely — see the size policy in _build_atoms_group.
 _COORD_BOX_MIN_WIDTH = 56
 
-# Lattice planes. Indices beyond ±12 are planes a few hundredths of an Ångström
-# apart, which no drawing can show.
-_MILLER_RANGE = 12
-_MILLER_BOX_MIN_WIDTH = 44
-# Where a typed plane sits, in units of d(hkl) from the plane through the origin;
+# Lattice planes. Where a typed plane sits, in units of d(hkl) from the plane through the origin;
 # wide enough for a large supercell.
 _PLANE_OFFSET_RANGE = 100.0
 _PLANE_OFFSET_STEP = 0.25
@@ -207,24 +203,12 @@ class GeometryPanel(QWidget):
         box.addWidget(self._plane_hint)
 
         row = QHBoxLayout()
-        self._miller_boxes = []
-        for name, value in (("h", 1), ("k", 0), ("l", 0)):
-            if name == "l":
-                # Hexagonal axes: the redundant third Miller–Bravais index, shown
-                # but not typed — it is fixed by the other two.
-                self._i_label = QLabel()
-                self._i_label.setToolTip("i = −(h + k): hexagonal axes are indexed (h k i l)")
-                row.addWidget(self._i_label)
-            spin = QSpinBox()
-            spin.setRange(-_MILLER_RANGE, _MILLER_RANGE)
-            spin.setValue(value)
-            spin.setPrefix(f"{name} ")
-            # Same reasoning as the coordinate boxes: share the row, never widen the dock.
-            spin.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-            spin.setMinimumWidth(_MILLER_BOX_MIN_WIDTH)
-            spin.valueChanged.connect(lambda _value: self._sync_plane_form())
-            row.addWidget(spin, 1)
-            self._miller_boxes.append(spin)
+        # The same boxes the density slice asks for a plane with.
+        self._miller = MillerIndices((1, 0, 0))
+        self._miller.changed.connect(self._sync_plane_form)
+        self._miller_boxes = self._miller.boxes
+        self._i_label = self._miller.i_label
+        row.addWidget(self._miller, 1)
         self._spacing_label = QLabel()
         self._spacing_label.setToolTip("Distance between neighbouring planes of the family")
         row.addWidget(self._spacing_label)
@@ -690,7 +674,7 @@ class GeometryPanel(QWidget):
 
     def _typed_miller(self):
         """The indices typed, or ``None`` for (0 0 0), which is not a plane."""
-        miller = tuple(spin.value() for spin in self._miller_boxes)
+        miller = self._miller.indices()
         return None if miller == (0, 0, 0) else miller
 
     def _add_typed_plane(self) -> None:
@@ -741,11 +725,8 @@ class GeometryPanel(QWidget):
         """Hint, i index and d(hkl) for the indices typed and the cell they are in."""
         cell = self._miller_cell
         miller = self._typed_miller()
-        hexagonal = cell is not None and lp.is_hexagonal(cell)
-        self._i_label.setVisible(hexagonal)
-        if hexagonal:
-            h, k, _l = (spin.value() for spin in self._miller_boxes)
-            self._i_label.setText(f"i {-(h + k)}")
+        self._miller.set_cell(cell)
+        hexagonal = self._miller.hexagonal
         if cell is None:
             self._plane_hint.setText(
                 "A molecule has no lattice planes." if len(self._structure)
@@ -761,7 +742,7 @@ class GeometryPanel(QWidget):
             self._spacing_label.setText("d —")
         else:
             self._spacing_label.setText(f"d {lp.spacing(cell, miller):.3f} Å")
-        for widget in (self._plane_offset, self._family_check, *self._miller_boxes,
+        for widget in (self._plane_offset, self._family_check, self._miller,
                        self._plane_opacity_slider, self._plane_opacity_box):
             widget.setEnabled(cell is not None)
         self._sync_buttons()

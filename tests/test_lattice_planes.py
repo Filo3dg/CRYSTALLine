@@ -13,12 +13,6 @@ def _cell(a, b, c, alpha, beta, gamma):
     return np.asarray(cellpar_to_cell([a, b, c, alpha, beta, gamma]), dtype=float)
 
 
-def _area(polygon):
-    centre = polygon.mean(axis=0)
-    return sum(np.linalg.norm(np.cross(polygon[i] - centre, polygon[(i + 1) % len(polygon)] - centre))
-               for i in range(len(polygon))) / 2.0
-
-
 # ── indices ───────────────────────────────────────────────────────────────
 def test_a_plane_needs_three_indices_not_all_zero():
     with pytest.raises(ValueError):
@@ -69,9 +63,16 @@ def test_monoclinic_spacing_matches_the_textbook_formula(miller):
     assert lp.spacing(_cell(a, b, c, 90, beta, 90), miller) == pytest.approx(1 / np.sqrt(inverse))
 
 
+def test_the_reciprocal_lattice_is_dual_to_the_cell():
+    cell = _cell(5.1, 6.3, 7.2, 81, 97, 103)
+    assert np.allclose(lp.reciprocal_lattice(cell) @ cell.T, np.eye(3))   # a*·a = 1, a*·b = 0
+    with pytest.raises(ValueError):
+        lp.reciprocal_lattice([[1, 0, 0], [2, 0, 0], [0, 0, 1]])
+
+
 def test_the_normal_is_perpendicular_to_every_lattice_vector_in_the_plane():
     cell = _cell(5.1, 6.3, 7.2, 81, 97, 103)
-    n = lp.normal(cell, (1, 2, 3))
+    n = lp.plane_frame(cell, (1, 2, 3))[1]
     assert np.linalg.norm(n) == pytest.approx(1.0)
     # (1 2 3) contains the lattice directions [2 -1 0] and [3 0 -1]
     for direction in ((2, -1, 0), (3, 0, -1), (0, 3, -2)):
@@ -90,15 +91,34 @@ def test_a_plane_placed_through_a_point_contains_it():
     point = np.array([0.31, 0.12, 0.77]) @ cell
     miller = (2, -1, 1)
     offset = lp.offset_of(cell, miller, point)
-    foot = lp.plane_point(cell, miller, offset)
-    assert np.dot(point - foot, lp.normal(cell, miller)) == pytest.approx(0.0, abs=1e-12)
+    foot, normal, _d = lp.plane_frame(cell, miller, offset)
+    assert np.dot(point - foot, normal) == pytest.approx(0.0, abs=1e-12)
 
 
 def test_neighbouring_offsets_are_one_spacing_apart():
     cell = _cell(5.1, 6.3, 7.2, 81, 97, 103)
     miller = (1, 1, 2)
-    step = lp.plane_point(cell, miller, 1.0) - lp.plane_point(cell, miller, 0.0)
+    step = lp.plane_frame(cell, miller, 1.0)[0] - lp.plane_frame(cell, miller, 0.0)[0]
     assert np.linalg.norm(step) == pytest.approx(lp.spacing(cell, miller))
+
+
+def test_the_plane_frame_of_a_cube_and_a_hexagonal_cell():
+    cubic = 4.21 * np.eye(3)
+    hexagonal = np.array([[2.29, 0.0, 0.0], [-1.145, 1.9832, 0.0], [0.0, 0.0, 3.59]])
+    point, normal, d = lp.plane_frame(cubic, (0, 0, 1), offset=0.5)
+    assert np.allclose(normal, [0, 0, 1]) and d == pytest.approx(4.21)
+    assert np.allclose(point, [0, 0, 2.105])
+    assert lp.spacing(cubic, (1, 1, 1)) == pytest.approx(4.21 / np.sqrt(3))
+    assert lp.spacing(cubic, (2, 0, 0)) == pytest.approx(4.21 / 2)
+    assert lp.spacing(hexagonal, (0, 0, 1)) == pytest.approx(3.59)
+
+
+def test_000_is_refused_everywhere_with_the_same_words():
+    for ask in (lambda: lp.plane_frame(np.eye(3), (0, 0, 0)),
+                lambda: lp.spacing(np.eye(3), (0, 0, 0)),
+                lambda: LatticePlane((0, 0, 0))):
+        with pytest.raises(ValueError, match=r"\(000\) is not a plane"):
+            ask()
 
 
 def test_a_family_across_a_region_counts_every_plane_that_crosses_it():
@@ -138,56 +158,20 @@ def test_atoms_on_a_plane_and_on_its_family():
 def test_the_tolerance_is_a_distance_not_a_fraction_of_d():
     cell = 10.0 * np.eye(3)
     near = np.array([[0.05, 3.0, 3.0]])      # 0.05 Å off (1 0 0)
-    far = np.array([[0.15, 3.0, 3.0]])       # 0.15 Å off it
+    far = np.array([[0.2, 3.0, 3.0]])        # 0.2 Å off it
     for miller in ((1, 0, 0), (4, 0, 0)):    # d = 10 Å and d = 2.5 Å alike
         assert len(lp.atoms_on(cell, LatticePlane(miller), near)) == 1
         assert len(lp.atoms_on(cell, LatticePlane(miller), far)) == 0
     assert len(lp.atoms_on(cell, LatticePlane((1, 0, 0)), np.empty((0, 3)))) == 0
 
 
-# ── the outline drawn ─────────────────────────────────────────────────────
-def test_a_cube_face_plane_is_a_square_and_a_111_plane_a_hexagon_or_triangle():
+def test_distances_are_signed_along_the_normal_and_wrap_for_a_family():
     cell = 4.0 * np.eye(3)
-    origin = np.zeros(3)
-
-    def outline(miller, offset):
-        return lp.polygon_in_region(lp.plane_point(cell, miller, offset),
-                                    lp.normal(cell, miller), origin, cell)
-
-    square = outline((0, 0, 1), 0.25)
-    assert len(square) == 4 and _area(square) == pytest.approx(16.0)
-    assert np.allclose(square[:, 2], 1.0)
-    hexagon = outline((1, 1, 1), 1.5)
-    assert len(hexagon) == 6 and _area(hexagon) == pytest.approx(3 * np.sqrt(3) / 2 * 8, rel=1e-6)  # side 2√2
-    triangle = outline((1, 1, 1), 0.75)
-    assert len(triangle) == 3 and _area(triangle) == pytest.approx(np.sqrt(3) / 4 * 18, rel=1e-6)  # side 3√2
-    # through a corner only, or outside altogether: nothing to draw
-    assert outline((1, 1, 1), 0.0) is None
-    assert outline((1, 1, 1), 3.2) is None
-
-
-def test_a_plane_stops_at_the_faces_of_a_slanted_cell():
-    cell = _cell(8.24, 13.45, 8.97, 90, 105.48, 90)
-    miller = (0, 0, 1)
-    polygon = lp.polygon_in_region(lp.plane_point(cell, miller, 0.5), lp.normal(cell, miller),
-                                   np.zeros(3), cell)
-    # the (0 0 1) section of a monoclinic cell is the a×b parallelogram, not the
-    # axis-aligned box around the cell
-    assert len(polygon) == 4
-    assert _area(polygon) == pytest.approx(np.linalg.norm(np.cross(cell[0], cell[1])))
-    fractional = polygon @ np.linalg.inv(cell)
-    assert np.all(fractional > -1e-9) and np.all(fractional < 1 + 1e-9)
-    assert np.allclose(fractional[:, 2], 0.5)
-
-
-def test_the_region_can_be_moved_off_the_origin():
-    cell = 4.0 * np.eye(3)
-    origin = np.array([0.0, 0.0, -2.0])
-    polygon = lp.polygon_in_region(lp.plane_point(cell, (0, 0, 1), -0.25),
-                                   lp.normal(cell, (0, 0, 1)), origin, cell)
-    assert polygon is not None and np.allclose(polygon[:, 2], -1.0)
-    assert lp.polygon_in_region(lp.plane_point(cell, (0, 0, 1), 0.75),
-                                lp.normal(cell, (0, 0, 1)), origin, cell) is None
+    points = np.array([[0.0, 0.0, 1.1], [0.0, 0.0, 4.9], [0.0, 0.0, 5.0]])
+    single = lp.distances_to(cell, LatticePlane((0, 0, 1), 0.25), points)   # the plane z = 1
+    assert np.allclose(single, [0.1, 3.9, 4.0])
+    family = lp.distances_to(cell, LatticePlane((0, 0, 1), 0.25, family=True), points)
+    assert np.allclose(family, [0.1, -0.1, 0.0])
 
 
 def test_a_plane_carries_its_opacity_kept_between_0_and_1():

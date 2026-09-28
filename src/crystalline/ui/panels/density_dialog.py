@@ -41,8 +41,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from crystalline.core import lattice_planes
 from crystalline.crystalio import density as den
 from crystalline.ui.panels.controls import ColourButton, Section, slider_row
+from crystalline.ui.widgets.miller import MillerIndices
 from crystalline.ui.safety import guard
 
 # By extension only: a cube's name is rewritten freely, its extension is not.
@@ -169,23 +171,16 @@ class DensityDialog(QDialog):
         # Miller indices, in the conventional cell. A plane named by a lattice
         # vector of the primitive cell was not a plane anyone asks for: MgO's
         # "across c" is a {111} layer holding one kind of atom.
-        indices = QHBoxLayout()
-        indices.setContentsMargins(0, 0, 0, 0)
-        self.miller: List[QSpinBox] = []
-        for index, value in zip("hkl", (0, 0, 1)):
-            box = QSpinBox(self)
-            box.setRange(-9, 9)
-            box.setValue(value)
-            box.valueChanged.connect(lambda _v: self._sync())
-            indices.addWidget(box)
-            self.miller.append(box)
+        # The same boxes the Geometry panel's lattice planes are typed in.
+        holder = MillerIndices((0, 0, 1))
+        holder.set_cell(self._miller_cell)
+        holder.changed.connect(self._sync)
+        holder.setToolTip("Miller indices of the plane, in the conventional cell.")
+        self.miller: List[QSpinBox] = holder.boxes
+        for index, box in zip("hkl", holder.boxes):
             # Each box its own attribute as well: the remembered settings are
             # read off the dialog's attributes, and a list of boxes is not one.
             setattr(self, f"miller_{index}", box)
-        indices.addStretch(1)
-        holder = QWidget()
-        holder.setLayout(indices)
-        holder.setToolTip("Miller indices of the plane, in the conventional cell.")
         section.add("Plane (hkl)", holder)
         self._miller_row = section.row_widgets("Plane (hkl)")
         # 0 and 1 are the same plane of the family, one spacing apart.
@@ -372,15 +367,17 @@ class DensityDialog(QDialog):
     def _plane_note(self) -> str:
         """d(hkl) and where the chosen plane sits, for the info line."""
         hkl = self._indices()
-        if hkl == (0, 0, 0):
-            return "(000) is not a plane: give at least one non-zero index."
+        try:
+            lattice_planes.miller_indices(hkl)
+        except ValueError as refused:  # (000): says why it is not a plane
+            return str(refused)
         if self._miller_cell is None:
             return ""
         try:
-            _point, _normal, spacing = den.miller_plane(self._miller_cell, hkl)
-        except (den.DensityError, ValueError, ArithmeticError):
+            spacing = lattice_planes.spacing(self._miller_cell, hkl)
+        except (ValueError, ArithmeticError):
             return ""
-        name = "(" + " ".join(str(v) for v in hkl) + ")"
+        name = lattice_planes.label(hkl, self._miller_cell)
         return (f"{name}: d = {spacing:.3f} Å, plane at "
                 f"{self.offset.value() * spacing:.3f} Å from the origin")
 

@@ -643,31 +643,6 @@ def sample(field: ScalarField, points: np.ndarray) -> np.ndarray:
     return field.values[index[:, 0], index[:, 1], index[:, 2]]
 
 
-def miller_plane(cell: np.ndarray, miller: Sequence[int], offset: float = 0.0):
-    """The plane ``(hkl)`` of ``cell``, as ``(point, unit normal, spacing)``.
-
-    The normal of ``(hkl)`` is the reciprocal lattice vector
-    ``h a* + k b* + l c*``, and the planes of the family are ``1/|G|`` apart.
-    ``offset`` places the plane that far along the normal, in units of that
-    spacing, from the cell's origin — so ``0`` is the plane through the origin
-    and ``0.5`` the one halfway to the next.
-
-    ``cell`` should be the *conventional* cell: that is what Miller indices are
-    quoted in, and MgO's ``(001)`` in its primitive fcc cell is a ``{111}``
-    plane holding one kind of atom.
-    """
-    h, k, l = (int(v) for v in miller)
-    if (h, k, l) == (0, 0, 0):
-        raise DensityError("(000) is not a plane: give at least one non-zero index.")
-    cell = np.asarray(cell, dtype=float)
-    reciprocal = np.linalg.inv(cell).T          # rows a*, b*, c* (no 2π)
-    g = h * reciprocal[0] + k * reciprocal[1] + l * reciprocal[2]
-    length = float(np.linalg.norm(g))
-    normal = g / length
-    spacing = 1.0 / length
-    return float(offset) * spacing * normal, normal, spacing
-
-
 def sample_periodic(field: ScalarField, points: np.ndarray, cell=None) -> np.ndarray:
     """``field`` at arbitrary points anywhere in space, interpolated.
 
