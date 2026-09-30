@@ -53,6 +53,24 @@ _SHRINK_FACTORS = re.compile(
 )
 _SHRINK_DENOMINATOR = re.compile(r"EXPRESSED IN UNITS\s+OF DENOMINATOR\s+(\d+)")
 
+# An eigenvector block, as CRYSTAL writes it under each frequency table
+# (reproduced column for column, after the comment marker and one space):
+#
+#  FREQ(CM**-1)     48.10     48.10    188.99
+#
+#  AT.   1 O  X     0.0000    0.0000   -0.0000
+#             Y     0.0000   -0.0010    0.0001
+#             Z     0.0006   -0.0019   -0.0002
+#
+# The first thirteen columns name the atom and the axis and the numbers start at
+# the fourteenth, which is where CRYSTALClear reads them from; a block holds one
+# row per axis per atom, and as many column groups as it takes to cover the modes.
+_EIGENVECTOR_ANNOTATION = 13
+_EIGENVECTOR_HEADER = re.compile(r"^\s*FREQ\(CM\*\*-1\)")
+_EIGENVECTOR_ROW = re.compile(r"^\s*AT\.\s+\d+\s+[A-Za-z]{1,2}\s+X\s*$|^\s+[YZ]\s*$")
+# A number as CRYSTALClear itself picks them out of such a row.
+_EIGENVECTOR_NUMBER = re.compile(r"-*[\d.]+[E\d\-+]*")
+
 
 @dataclass
 class LoadedFile:
@@ -67,6 +85,9 @@ class LoadedFile:
     structure: Structure
     modes: Optional[PhononModes] = None
     qmodes: Optional[list] = None
+    # Why the modes are missing from an output that plainly has some. Shown to
+    # the user; ``None`` when nothing went wrong.
+    note: Optional[str] = None
 
     @property
     def has_phonons(self) -> bool:
@@ -98,10 +119,26 @@ def load(path: str, initial: bool = False) -> LoadedFile:
 
     This is the single entry point the GUI uses: it returns the structure and,
     if the output is a frequency calculation, the phonon modes as well.
+
+    An output whose frequency section cannot be read still opens, with the
+    geometry and a note saying why the modes are missing. Reading modes is the
+    fragile part: it goes through CRYSTALClear's eigenvector parser, which reads
+    each block to the first line that is not one of its rows.
+    :func:`_repair_eigenvector_blocks` recovers the common reason for that to go
+    wrong — a line in a block that is not one of its rows — and what is left is a
+    section this program cannot read. Losing the geometry as well, over that,
+    would be a poor trade.
     """
     if not _is_gui(path) and not _is_cif(path) and has_phonons(path):
-        structure, qmodes = load_dispersion(path)
-        return LoadedFile(structure=structure, modes=qmodes[0], qmodes=qmodes)
+        try:
+            structure, qmodes = load_dispersion(path)
+            return LoadedFile(structure=structure, modes=qmodes[0], qmodes=qmodes)
+        except Exception as exc:  # noqa: BLE001 - any parse failure, same answer
+            note = (f"This output has a frequency calculation, but its modes could "
+                    f"not be read ({type(exc).__name__}: {exc}). The structure is "
+                    f"shown without them.")
+            return LoadedFile(structure=load_structure(path, initial=initial),
+                              modes=None, note=note)
     return LoadedFile(structure=load_structure(path, initial=initial), modes=None)
 
 
@@ -156,6 +193,69 @@ def _structure_for_modes(out, natom_modes: int) -> Structure:
     )
 
 
+def _is_eigenvector_row(line: str, nmode: int) -> bool:
+    """Whether ``line`` is one row of an eigenvector block over ``nmode`` modes.
+
+    Both halves have to hold: the annotation field names an atom and an axis,
+    *and* the rest of the row carries exactly as many numbers as the block's
+    header listed frequencies. A line that satisfies only one of them was
+    written by something other than the eigenvector printer.
+    """
+    head, rest = line[:_EIGENVECTOR_ANNOTATION], line[_EIGENVECTOR_ANNOTATION:]
+    return bool(_EIGENVECTOR_ROW.match(head)) and \
+        len(_EIGENVECTOR_NUMBER.findall(rest)) == nmode
+
+
+def _repair_eigenvector_blocks(data: list) -> int:
+    """Take out of every eigenvector block whatever was written into it.
+
+    CRYSTALClear reads a block row by row from its header to the first blank
+    line, and assumes nothing but rows in between. Anything else there is read as
+    a further row, and since it holds a different count of numbers the whole
+    frequency section fails on the mismatched shape. Real outputs put three kinds
+    of line in that position: CRYSTAL's own ``REDUCED MASS OF MODE`` listing,
+    which some builds print straight after the last row; the runtime notes of the
+    compiler (``IEEE_UNDERFLOW_FLAG``); and the output of a patched build or of a
+    wrapper writing to the same stream. A line glued to the end of a block breaks
+    it; a line landing in the middle of one also cuts the rows after it off the
+    block they belong to.
+
+    Each block is rewritten here, in ``data`` and only there, as its own rows
+    followed by as many empty lines as there were other ones: the rows end up
+    contiguous, the block ends where they end, and the line count the caller's
+    ``eoo`` was computed against is unchanged. A q-point header or a further
+    block is never crossed. Returns how many lines were blanked — zero for an
+    output whose blocks hold nothing but their rows, which is every output none
+    of this applies to.
+
+    A row is recognised by the same 13-column annotation field CRYSTALClear
+    reads the numbers past, so this is exactly as strict as the parser it feeds;
+    and a block left short of rows is caught downstream by
+    :func:`_structure_for_modes`, which refuses modes that span neither cell
+    rather than placing them on the wrong one.
+    """
+    blanked = 0
+    index = 0
+    while index < len(data):
+        if not _EIGENVECTOR_HEADER.match(data[index]):
+            index += 1
+            continue
+        nmode = len(_EIGENVECTOR_NUMBER.findall(data[index][_EIGENVECTOR_ANNOTATION:]))
+        index += 2  # the header, then the blank line CRYSTAL puts under it
+        start = index
+        while (index < len(data) and data[index].strip()
+               and not _EIGENVECTOR_HEADER.match(data[index])
+               and not _QPOINT_HEADER.search(data[index])):
+            index += 1
+        block = data[start:index]
+        rows = [line for line in block if _is_eigenvector_row(line, nmode)]
+        if len(rows) == len(block):
+            continue  # rows and nothing else: this block needs no help
+        data[start:index] = rows + ["\n"] * (len(block) - len(rows))
+        blanked += len(block) - len(rows)
+    return blanked
+
+
 def load_dispersion(
     path: str,
     keep_imaginary: bool = True,
@@ -175,7 +275,15 @@ def load_dispersion(
     from CRYSTALClear.crystal_io import Crystal_output
 
     out = Crystal_output(path)
-    out.get_phonon(read_eigvt=True, rm_imaginary=not keep_imaginary)
+    try:
+        out.get_phonon(read_eigvt=True, rm_imaginary=not keep_imaginary)
+    except Exception:
+        # Something other than CRYSTAL may have written into the frequency
+        # section. If so, take it out of the blocks it landed in and read them
+        # again; if not, the failure is a real one and belongs to the caller.
+        if not _repair_eigenvector_blocks(out.data):
+            raise
+        out.get_phonon(read_eigvt=True, rm_imaginary=not keep_imaginary)
 
     # frequency: (nqpoint, nmode) in THz -> converted to cm^-1 below.
     # eigenvector at a q-point comes back per mode either flattened as
@@ -643,7 +751,7 @@ def _out_geometry_to_ase(out, initial: bool) -> Atoms:
     """
     atoms = _pmg_to_ase(out.get_geometry(initial=initial))
     atoms.set_pbc(_out_pbc(out))
-    return atoms
+    return _unwrap_aperiodic(atoms)
 
 
 def _out_primitive_to_ase(out, initial: bool) -> Atoms:
@@ -656,6 +764,32 @@ def _out_primitive_to_ase(out, initial: bool) -> Atoms:
     """
     atoms = _pmg_to_ase(out.get_primitive_geometry(initial=initial))
     atoms.set_pbc(_out_pbc(out))
+    return _unwrap_aperiodic(atoms)
+
+
+def _unwrap_aperiodic(atoms: Atoms) -> Atoms:
+    """Bring a slab or a polymer back together across the vacuum CRYSTAL wrote.
+
+    pymatgen wraps fractional coordinates into ``[0, 1)``. Along a real lattice
+    vector that picks a different image of the same atom and changes nothing.
+    Along the direction CRYSTAL fills with a formal 500 Å there is no image: an
+    atom a hair below the origin comes back at 499.99999 Å — half a kilometre
+    from the chain it belongs to, which is what the wrapped primitive cell of a
+    polymer's SCELPHONO run looks like.
+
+    Each aperiodic axis is therefore rewound onto the branch its first atom sits
+    on, which leaves coordinates that were never wrapped exactly as they were. It
+    assumes the structure is narrower than half the formal cell along that axis,
+    which against 500 Å a slab or a chain always is.
+    """
+    if len(atoms) == 0 or all(atoms.pbc) or atoms.cell.rank < 3:
+        return atoms
+    frac = atoms.get_scaled_positions(wrap=False)
+    for axis in range(3):
+        if atoms.pbc[axis]:
+            continue
+        frac[:, axis] -= np.round(frac[:, axis] - frac[0, axis])
+    atoms.set_scaled_positions(frac)
     return atoms
 
 

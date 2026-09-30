@@ -6,26 +6,22 @@
 file (`.gui`, `.f34`) or a crystallographic information file (`.cif`). A file
 dropped on the window is opened in the same way.
 
-If the output contains a vibrational calculation, the modes are read with it.
+No output to hand? [Installation](install.md#an-example-to-open) offers a small
+MgO calculation to open.
+
+If the output contains a vibrational calculation, phonon modes are read with it.
 If it does not, the geometry alone is shown and the remaining functions are
 unaffected.
 
 ## Working in the calculation's folder
 
-CRYSTAL writes more than the output file. A properties run leaves `BAND.DAT`,
-`DOSS.DAT`, `fort.25` and their named variants; an anharmonic run leaves
-`ANSCANWF.DAT`; the decks that produced them stay as `.d3` files.
-
-CRYSTALLine looks for these beside the output that is open, and works better
-when they are all in one folder:
+CRYSTAL writes more than the output file. Several external units might be 
+generated depending on the specific task. CRYSTALLine looks for these beside 
+the output that is open, and works better when they are all in one folder:
 
 - The **Electronic bands & DOS** dialog lists the band and density-of-states
-  files it finds there, recognises them by their contents rather than their
-  names, and pairs a band structure with a density of states computed from the
-  same SCF.
-- It also reads the `.d3` deck that produced the path, which is where the names
-  of its corners come from — a band file records coordinates, and for some
-  paths not even those.
+  files it finds there, recognises them by their contents, and pairs a band 
+  structure with a density of states computed from the same SCF.
 - The file dialogs of the other plots open in that folder.
 - Anharmonic wavefunctions are found without being asked for.
 
@@ -47,9 +43,10 @@ The window is divided into dockable panels:
 | Right | **Phonons** | the list of vibrational modes and the animation controls |
 | Bottom | **Plots** | the property plots, in tabs |
 
-Panels can be moved, stacked, resized or closed. **View → Panels** restores a
-single panel and **View → Restore all panels** restores the original
-arrangement.
+**View → Panels** lists every panel with a tick beside it: clearing the tick
+puts that panel away and setting it again brings it back, so the window can be
+narrowed to the panels a particular job needs. **View → Restore all panels**
+brings back everything at once.
 
 ## Controlling the view
 

@@ -100,7 +100,11 @@ spectrum — and only the widths used by the chosen lineshape are enabled.
 ## Properties read from the output
 
 These entries use the open output file and are enabled when it contains the
-data they need.
+data they need. They are drawn by
+[CRYSTALClear](https://crystaldevs.github.io/CRYSTALClear/), whose
+[notebooks](https://crystaldevs.github.io/CRYSTALClear/notebooks/index.html)
+work through each kind of plot in detail — what it is computed from, and what
+can be varied — for anyone who wants more than the dialogs here offer.
 
 ::::{grid} 1 1 2 2
 :gutter: 3
@@ -118,12 +122,14 @@ data they need.
 :::
 
 :::{grid-item}
-```{image} plot-elastic.png
-:alt: Young's modulus surface of coesite
+```{image} plot-gallery.png
+:alt: Four plots of coesite - a Young's modulus surface, two polar sections and an equation of state
 :class: crystal-framed
 ```
 +++
-The directional Young's modulus of coesite.
+Coesite: the directional Young's modulus as a surface, the same and the linear
+compressibility as sections through the principal planes, and an equation of
+state.
 :::
 
 ::::
@@ -134,12 +140,16 @@ The directional Young's modulus of coesite.
 keyword and draws the orbital in the 3D view rather than in the plot panel;
 **Clear orbital** removes it.
 
-```{image} screen2.png
-:alt: A crystalline orbital across a graphite supercell
+```{image} plot-orbital.png
+:alt: The highest occupied crystalline orbital of graphite over a 3x3 supercell
 :class: crystal-framed
 :width: 70%
 :align: center
 ```
++++
+The highest occupied orbital of graphite at k = (1/9, 0, 0), over three cells by
+three. The lobes change sign from cell to cell with the phase of the Bloch sum;
+at Γ they would all be alike.
 
 ## Electron density and electrostatic potential
 

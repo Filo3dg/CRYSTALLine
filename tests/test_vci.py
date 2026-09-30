@@ -12,6 +12,7 @@ import os
 
 import pytest
 
+import sample_data as sample  # noqa: E402
 from crystalline.crystalio.vci import (
     PLOT_FUNCTIONS,
     REPRESENTATIONS,
@@ -160,13 +161,7 @@ def test_the_default_window_of_a_run_with_no_levels_is_still_usable():
 
 
 # ── against real outputs, when this machine has any ─────────────────────
-_VCI_OUTS = [
-    p for p in sorted(
-        glob.glob(os.path.expanduser(
-            "~/Desktop/PyCrystal/anharmonic_freq/CO2_molecule/*/co2_anh_*.out"))
-    )
-    if has_vci(p)
-]
+_VCI_OUTS = [p for p in sample.matches("co2/*/co2_anh_*.out") if has_vci(p)]
 
 
 @pytest.mark.skipif(not _VCI_OUTS, reason="no sample VCI .out available")

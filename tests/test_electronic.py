@@ -15,24 +15,22 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+import sample_data as sample  # noqa: E402
 from crystalline.crystalio import electronic as el  # noqa: E402
 
-_SCHOOL = os.path.expanduser("~/MSSC2025/Basic/Day4/OneElectronProperties")
-_SI = os.path.join(_SCHOOL, "Silicon")
-_BE = os.path.join(_SCHOOL, "Berillium")
-_SI_BAND, _SI_DOS = os.path.join(_SI, "BAND.DAT"), os.path.join(_SI, "DOSS.DAT")
-_MGO = os.path.expanduser("~/MSSC2025/Advanced/Day1/one-electron-properties")
-_LIF_DIR = os.path.expanduser("~/MSSC2025/Basic/Day5/Defects/4_LiF_2_2_2_F_center_band")
-_LIF = os.path.join(_LIF_DIR, "BAND.DAT")
-_ITO = os.path.expanduser(
-    "~/Desktop/PyCrystal/CRYSTALpytools/examples/data/doss_ito-cu.DOSS")
+# Sample PROPERTIES runs, shipped in tests/data — see tests/sample_data.py.
+_SI, _BE, _MGO, _LIF_DIR = (sample.folder(name)
+                            for name in ("silicon", "beryllium", "mgo", "lif"))
+_SI_BAND, _SI_DOS = sample.path("silicon/BAND.DAT"), sample.path("silicon/DOSS.DAT")
+_LIF = sample.path("lif/BAND.DAT")
+_ITO = sample.path("ito/doss_ito-cu.DOSS")
 _SI_TICKS = ("(0,0,0)/8", "(4,0,4)/8", "(4,2,6)/8", "(4,4,4)/8", "(0,0,0)/8")
 
-needs_silicon = pytest.mark.skipif(
-    not (os.path.isfile(_SI_BAND) and os.path.isfile(_SI_DOS)),
-    reason="the MSSC2025 silicon PROPERTIES run is not on this machine")
-needs_lif = pytest.mark.skipif(not os.path.isfile(_LIF), reason="no spin-polarised band file")
-needs_ito = pytest.mark.skipif(not os.path.isfile(_ITO), reason="no spin-polarised DOS file")
+needs_silicon = sample.needs("silicon/BAND.DAT", "silicon/DOSS.DAT")
+needs_beryllium = sample.needs("beryllium/BAND.DAT", "beryllium/DOSS.DAT")
+needs_mgo = sample.needs("mgo/mgo_band.BAND", "mgo/mgo_doss_totalao.DOSS")
+needs_lif = sample.needs("lif/BAND.DAT")
+needs_ito = sample.needs("ito/doss_ito-cu.DOSS")
 
 
 @pytest.fixture(scope="module")
@@ -166,7 +164,7 @@ def test_a_deck_is_read_for_its_path_and_its_letters(tmp_path):
     assert deck.labels == ("G", "M", "L", "H", "K", "G")
 
 
-@pytest.mark.skipif(not os.path.isdir(_BE), reason="no beryllium run")
+@needs_beryllium
 def test_the_deck_names_corners_the_file_could_not_write_down():
     """Beryllium's (-2,4,3) overflows its field in BAND.DAT and is written
     (*,4,3) — the coordinates are gone, so only the deck can name it. CRYSTAL's
@@ -242,7 +240,7 @@ def test_a_metal_window_is_as_tall_above_the_fermi_level_as_below():
     assert window == (-9.0, 7.0)
 
 
-@pytest.mark.skipif(not os.path.isdir(_BE), reason="no beryllium run")
+@needs_beryllium
 def test_beryllium_is_shown_without_its_1s_band():
     info = el.describe_bands(os.path.join(_BE, "BAND.DAT"))
     assert info.energy_span[0] < -120, "the 1s band is in the file"
@@ -313,7 +311,7 @@ def test_a_properties_deck_is_found_by_extension_and_content_whatever_its_stem(t
     assert {os.path.basename(d.path) for d in decks} == {"renamed_anything.d3"}
 
 
-@pytest.mark.skipif(not os.path.isdir(_MGO), reason="no MgO properties folder")
+@needs_mgo
 def test_a_folder_with_several_runs_offers_every_one():
     """Two band structures and two DOS here; the old finder, wanting exactly
     one of each, filled in neither."""
@@ -561,7 +559,7 @@ def test_the_files_beside_the_output_are_filled_in(qapp):
     assert _ok(dialog)
 
 
-@pytest.mark.skipif(not os.path.isdir(_MGO), reason="no MgO properties folder")
+@needs_mgo
 def test_several_runs_in_one_folder_are_all_offered_and_one_is_chosen(qapp):
     dialog = _dialog(qapp, folder=_MGO)
     for kind in ("band", "dos"):
@@ -572,7 +570,7 @@ def test_several_runs_in_one_folder_are_all_offered_and_one_is_chosen(qapp):
     assert _ok(dialog)
 
 
-@pytest.mark.skipif(not os.path.isdir(_MGO), reason="no MgO properties folder")
+@needs_mgo
 def test_the_bands_and_dos_chosen_come_from_one_calculation(qapp):
     """Ranked separately the newest of each was a B3LYP band structure beside a
     PBE DOS, drawn 0.75 eV apart. The Fermi level each carries says which SCF
@@ -590,7 +588,7 @@ def test_with_nothing_agreeing_the_best_of_each_is_kept():
     assert el.pair_files(["missing.BAND"], ["missing.DOSS"]) == ("missing.BAND", "missing.DOSS")
 
 
-@pytest.mark.skipif(not os.path.isdir(_BE), reason="no beryllium run")
+@needs_beryllium
 def test_fermi_levels_that_disagree_are_pointed_out(qapp):
     """Beryllium's BAND and DOSS put E_F 0.13 eV apart; side by side the DOS is
     shifted by exactly that, and the dialog should say so."""
@@ -682,7 +680,7 @@ def test_the_window_is_fitted_to_the_data(qapp):
     assert bound_high - bound_low < 60, "the track spans the data, not ±200 eV"
 
 
-@pytest.mark.skipif(not os.path.isdir(_BE), reason="no beryllium run")
+@needs_beryllium
 def test_the_track_reaches_the_core_the_window_leaves_out(qapp):
     dialog = _dialog(qapp, folder=_BE)
     assert dialog.energy_bounds()[0] < -120
@@ -868,11 +866,7 @@ def test_one_menu_entry_opens_the_dialog():
 def test_the_open_runs_files_come_first_by_their_fermi_level_not_their_names(tmp_path):
     """A folder shared by several systems. Which run a file came from is read
     from the Fermi level it records, never from being named after the output."""
-    source = os.path.expanduser(
-        "~/QMMC2026/OneElectronProperties/output/mgo_band_dat.BAND")
-    if not os.path.isfile(source):
-        pytest.skip("no MgO band file to build the fixture from")
-    text = open(source).read()
+    text = open(sample.need("qmmc/mgo_band_dat.BAND")).read()
     assert "# EFERMI (HARTREE)   -0.12156" in text
 
     ours = tmp_path / "urea_band.BAND"            # named after another run …

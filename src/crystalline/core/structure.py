@@ -143,6 +143,31 @@ class Structure:
         """Lattice parameters ``[a, b, c, alpha, beta, gamma]`` (Å and degrees)."""
         return np.asarray(self._atoms.cell.cellpar(), dtype=float)
 
+    def centre(self) -> np.ndarray:
+        """The middle of the structure, in cartesian Å.
+
+        The middle of the cell along each direction that repeats, and the middle
+        of the atoms along each direction that does not. For a crystal that is
+        the cell centre and for a molecule the centroid, but for a slab or a
+        polymer the two differ by a great deal: CRYSTAL writes a formal 500 Å
+        across the aperiodic directions, and half of that is 250 Å out in the
+        vacuum rather than anywhere near the structure.
+
+        Falls back to the centroid when the cell is singular, there being no
+        basis to resolve the atoms into.
+        """
+        positions = np.asarray(self._atoms.get_positions(), dtype=float)
+        centroid = positions.mean(axis=0) if len(positions) else np.zeros(3)
+        periodic = np.asarray(self._atoms.get_pbc(), dtype=bool)
+        if not periodic.any():
+            return centroid
+        cell = np.asarray(self._atoms.cell, dtype=float)
+        try:
+            fractional = np.linalg.solve(cell.T, centroid)
+        except np.linalg.LinAlgError:
+            return centroid
+        return np.asarray(np.where(periodic, 0.5, fractional) @ cell, dtype=float)
+
     # ── editing vocabulary ──────────────────────────────────────────────
     def set_cell(self, cell, periodic: bool = True) -> None:
         """Set the (3,3) lattice and toggle periodicity."""

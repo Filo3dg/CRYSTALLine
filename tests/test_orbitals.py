@@ -12,16 +12,17 @@ import textwrap
 import numpy as np
 import pytest
 
+import sample_data as sample  # noqa: E402
 from crystalline.core import orbitals as orb
 from crystalline.crystalio import molden
 
-# A real ORBITALS run, when one is on this machine.
-_RUN = os.path.expanduser("~/Desktop/PyCrystal/corundum_orbitals")
-_GAMMA = os.path.join(_RUN, "corundum_00001_K000_real.molden")
+# A real ORBITALS run. The orbitals themselves are megabytes apiece, so they are
+# not shipped: point CRYSTALLINE_TEST_DATA at a directory holding a ``corundum``
+# folder to run these — see tests/sample_data.py.
+_GAMMA = sample.path("corundum/corundum_00001_K000_real.molden")
+_RUN = os.path.dirname(_GAMMA) if _GAMMA else ""
 
-requires_run = pytest.mark.skipif(
-    not os.path.isfile(_GAMMA), reason="the reference ORBITALS run is not on this machine"
-)
+requires_run = sample.needs("corundum/corundum_00001_K000_real.molden")
 
 _MINIMAL = textwrap.dedent("""\
     [Molden Format]

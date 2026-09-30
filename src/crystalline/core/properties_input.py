@@ -210,8 +210,8 @@ def band_path(structure: Structure) -> Tuple[List[Tuple[str, str]], List[Tuple[t
     """
     if not structure.is_periodic:
         raise PropertiesInputError("A band structure needs a periodic structure.")
-    if int(sum(bool(p) for p in structure.pbc)) == 2:
-        labels, segments = _planar_band_path(structure)
+    if int(sum(bool(p) for p in structure.pbc)) in (1, 2):
+        labels, segments = _reduced_band_path(structure)
         try:
             band_shrink(segments)
         except PropertiesInputError:
@@ -268,9 +268,9 @@ def band_path_kind(structure: Structure) -> str:
     """
     if not structure.is_periodic:
         return "standard"
-    if int(sum(bool(p) for p in structure.pbc)) == 2:
+    if int(sum(bool(p) for p in structure.pbc)) in (1, 2):
         try:
-            band_shrink(_planar_band_path(structure)[1])
+            band_shrink(_reduced_band_path(structure)[1])
         except PropertiesInputError:
             return "points"
         except Exception:  # noqa: BLE001 - the note falls back to the usual wording
@@ -413,13 +413,17 @@ def _crystal_names(structure: Structure, segments) -> List[Optional[Tuple[str, s
     return names
 
 
-def _planar_band_path(structure: Structure):
-    """The conventional path of a *slab*, which has no k_z to travel along.
+def _reduced_band_path(structure: Structure):
+    """The conventional path of a slab or a polymer, which has fewer k axes.
 
     Read as a 3D crystal, a slab's path runs through A, L and H — points along
     a reciprocal direction that only exists because a vacuum vector was counted
-    as a lattice one. ASE names the 2D Bravais lattice and its path when it is
-    told which directions are real.
+    as a lattice one. A polymer is worse: with two such vectors it came out
+    tetragonal, and was offered a path through M, A and R, none of which is a
+    point of a one-dimensional zone at all. Its path is Γ to X and nothing else.
+
+    ASE names the Bravais lattice and its path when it is told which directions
+    are real, which is what ``pbc`` does here.
     """
     atoms = structure.to_ase()
     try:
@@ -428,8 +432,9 @@ def _planar_band_path(structure: Structure):
                   for name, point in path.special_points.items()}
         walks = [segment for segment in str(path.path).split(",") if segment]
     except Exception as exc:  # noqa: BLE001 - surfaced with what to do instead
+        kind = "polymer" if int(sum(bool(p) for p in structure.pbc)) == 1 else "slab"
         raise PropertiesInputError(
-            f"Could not work out the high-symmetry path for this slab ({exc}). "
+            f"Could not work out the high-symmetry path for this {kind} ({exc}). "
             f"Enter the path by hand."
         ) from exc
 
@@ -442,7 +447,8 @@ def _planar_band_path(structure: Structure):
                 labels.append((start, end))
                 segments.append((points[start], points[end]))
     if not segments:
-        raise PropertiesInputError("This slab has no high-symmetry path to follow.")
+        kind = "polymer" if int(sum(bool(p) for p in structure.pbc)) == 1 else "slab"
+        raise PropertiesInputError(f"This {kind} has no high-symmetry path to follow.")
     return labels, segments
 
 

@@ -183,13 +183,11 @@ def test_a_cube_is_known_by_its_first_line_and_never_by_its_name(tmp_path):
 
 def test_the_tutorials_own_file_names_are_read_correctly():
     """The case that exposed the name guessing, on the real files if present."""
-    import os
+    import sample_data as sample
 
-    base = os.path.expanduser("~/QMMC2026/OneElectronProperties/output")
-    if not os.path.isdir(base):
-        pytest.skip("no QMMC output folder")
-    assert D.read_field(os.path.join(base, "mgo_pot3.cube")).kind == D.POTENTIAL
-    assert D.read_field(os.path.join(base, "mgo_ech3.cube")).kind == D.CHARGE
+    potential = sample.need("qmmc/mgo_pot3.cube", "qmmc/mgo_ech3.cube")
+    assert D.read_field(potential).kind == D.POTENTIAL
+    assert D.read_field(sample.path("qmmc/mgo_ech3.cube")).kind == D.CHARGE
 
 
 def test_a_field_nothing_identifies_is_drawn_by_what_its_values_do(tmp_path):

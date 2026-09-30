@@ -3,7 +3,8 @@
 A CRYSTAL phonon calculation yields, for each normal mode, a frequency and a
 set of atomic displacement vectors (the eigenvector). Animating a mode means
 displacing every atom from its equilibrium position along that eigenvector,
-scaled by ``amplitude * sin(phase)``.
+scaled by ``amplitude * cos(phase)`` — the real part of an amplitude turning
+with time, at a phase the animator advances.
 
 **Away from Gamma.** A SCELPHONO run computes force constants in a supercell
 and reports modes at every q commensurate with it. Such a mode is a *travelling
@@ -16,8 +17,9 @@ displacement of an atom is therefore
 
 which is what :func:`displaced_positions` evaluates, with the ``exp(2*pi*i q·n)``
 factor folded into the eigenvector when a cell operation replicates a mode onto
-image atoms (``core.cells``). At Gamma the factor is 1, the eigenvector is real,
-and everything reduces to the in-phase motion this module started with.
+image atoms (``core.cells``). The crest therefore travels along **+q**, which is
+what the mode's label says it does. At Gamma the factor is 1, the eigenvector is
+real, and everything reduces to the in-phase motion this module started with.
 
 ``qpoint`` is always in fractional coordinates of the reciprocal basis of the
 cell the mode's geometry is currently expressed in — a cell operation that
@@ -230,11 +232,8 @@ def displaced_positions(
 
     A complex eigenvector — a mode away from Gamma, whose per-atom phases were
     baked in when the mode was replicated onto the displayed cells — is
-    evaluated as ``Im[e * exp(i*phase)] = Re(e) sin(phase) + Im(e) cos(phase)``.
-    That is the travelling wave of the module docstring with the time origin
-    picked so a real eigenvector still moves as ``e * sin(phase)``: the animation
-    of a Gamma mode is unchanged, and any mode still starts from rest at
-    ``phase = 0`` in the sense that the *reference* cell does.
+    evaluated as the real part of that amplitude turning with time; see
+    :func:`frame_displacement`.
 
     Parameters
     ----------
@@ -245,7 +244,8 @@ def displaced_positions(
     amplitude:
         Peak displacement of the most-displaced atom, in Angstrom.
     phase:
-        Animation phase in radians; the frame factor is ``sin(phase)``.
+        Animation phase ``w*t`` in radians; the frame factor is ``cos(phase)``
+        for a Gamma mode, and the real part of ``exp(-i*phase)`` away from it.
     """
     eq = np.asarray(equilibrium, dtype=float)
     if eq.shape != mode.eigenvector.shape:
@@ -260,14 +260,20 @@ def displaced_positions(
 def frame_displacement(eigenvector: np.ndarray, phase: float) -> np.ndarray:
     """The real (N, 3) displacement pattern of ``eigenvector`` at ``phase``.
 
+    The displacement of an atom is the **real part** of its complex amplitude
+    turning with time, ``Re[e * exp(-i*w*t)]``, with the ``exp(2*pi*i q·n)`` of
+    its cell already folded into ``e``; ``phase`` is ``w*t``. At Gamma ``e`` is
+    real and this is simply ``e * cos(phase)``.
+
     Split out from :func:`displaced_positions` because the same combination is
     what a *still* picture of a mode should draw — see the arrow field in
-    ``viz.phonon_animator``, which is this at ``phase = pi/2``.
+    ``viz.phonon_animator``, which is this at ``phase = 0``, where it comes out
+    as ``Re(e)``: CRYSTAL's own IN-PHASE block.
     """
     ev = np.asarray(eigenvector)
     if not np.iscomplexobj(ev):
-        return np.sin(phase) * ev
-    return np.real(ev) * np.sin(phase) + np.imag(ev) * np.cos(phase)
+        return np.cos(phase) * ev  # the same thing, without the complex part
+    return np.real(ev * np.exp(-1j * phase))
 
 
 def phase_factors(qpoint, offsets) -> Optional[np.ndarray]:

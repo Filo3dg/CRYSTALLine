@@ -260,3 +260,53 @@ def test_a_broken_paint_does_not_kill_the_widget(qapp, monkeypatch, tmp_path):
     switch.grab()                              # ...and the widget is still usable
     assert log.read_text().count("ZeroDivisionError") >= 2, "the sabotage never fired"
     assert len(shown) == 1                     # reported once, not once per repaint
+
+
+def test_a_failed_paint_leaves_no_painter_painting(qapp, monkeypatch, tmp_path):
+    """The crash this net was preventing, caused by the net itself.
+
+    A ``paintEvent`` that raises has a live ``QPainter`` in its frame. The guard
+    catches the exception, and if anything then holds the traceback — the report
+    used to be handed the exception object itself — that frame, and the painter
+    in it, stay alive. Qt is left painting on the widget: destroying it prints
+    *Cannot destroy paint device that is being painted*, and the process dies at
+    whatever unrelated moment that turns out to be. It was dying two test
+    modules later.
+
+    Both cuts through that chain are checked: the paint ends its painter however
+    it leaves, and the report is handed strings rather than the exception.
+    """
+    import gc
+
+    from PySide6.QtGui import QPainter
+
+    from crystalline.ui.widgets import ToggleSwitch
+
+    monkeypatch.setattr(safety, "log_path", lambda: tmp_path / "errors.log")
+    shown = []
+    monkeypatch.setattr(safety, "_show", lambda *a: shown.append(a))
+
+    host = QWidget()
+    switch = ToggleSwitch(host)
+    switch.resize(60, 30)
+    monkeypatch.setattr(
+        type(switch), "isEnabled",
+        lambda self: (_ for _ in ()).throw(ZeroDivisionError("boom")),
+    )
+    switch.grab()  # the guard swallows the failure
+
+    gc.collect()
+    active = []
+    for obj in gc.get_objects():
+        if not isinstance(obj, QPainter):
+            continue
+        try:
+            if obj.isActive():
+                active.append(obj)
+        except RuntimeError:  # its C++ side is already gone, which is the point
+            pass
+    assert not active, "a painter is still painting on a widget that is about to go"
+    assert shown, "the failure was not reported at all"
+    assert not [x for args in shown for x in args if isinstance(x, BaseException)], (
+        "the report holds the exception, and so its traceback, and so the painter"
+    )

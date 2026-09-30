@@ -106,43 +106,47 @@ class ToggleSwitch(QAbstractButton):
     # ── painting ────────────────────────────────────────────────────────
     @guard()
     def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        palette = self.palette()
+        # ``with``, not a bare end() at the bottom: if anything in here
+        # raises, the guard above catches it, and a painter left active
+        # keeps Qt painting on this widget for as long as the report
+        # holds the traceback. Destroying the device then takes the
+        # process down, far from the line that failed.
+        with QPainter(self) as painter:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            palette = self.palette()
 
-        height = _TRACK_HEIGHT
-        width = _TRACK_WIDTH
-        radius = height / 2.0
-        enabled = self.isEnabled()
+            height = _TRACK_HEIGHT
+            width = _TRACK_WIDTH
+            radius = height / 2.0
+            enabled = self.isEnabled()
 
-        on = QColor(palette.highlight().color())
-        off = QColor(palette.mid().color())
-        if not enabled:
-            on.setAlpha(90)
-            off.setAlpha(90)
-        # Blend between off and on with the knob, so the track fills as it slides
-        # rather than snapping colour at the end of the travel.
-        track = QColor(
-            int(off.red() + (on.red() - off.red()) * self._offset),
-            int(off.green() + (on.green() - off.green()) * self._offset),
-            int(off.blue() + (on.blue() - off.blue()) * self._offset),
-            int(off.alpha() + (on.alpha() - off.alpha()) * self._offset),
-        )
+            on = QColor(palette.highlight().color())
+            off = QColor(palette.mid().color())
+            if not enabled:
+                on.setAlpha(90)
+                off.setAlpha(90)
+            # Blend between off and on with the knob, so the track fills as it slides
+            # rather than snapping colour at the end of the travel.
+            track = QColor(
+                int(off.red() + (on.red() - off.red()) * self._offset),
+                int(off.green() + (on.green() - off.green()) * self._offset),
+                int(off.blue() + (on.blue() - off.blue()) * self._offset),
+                int(off.alpha() + (on.alpha() - off.alpha()) * self._offset),
+            )
 
-        path = QPainterPath()
-        path.addRoundedRect(0.0, 0.0, float(width), float(height), radius, radius)
-        painter.fillPath(path, track)
+            path = QPainterPath()
+            path.addRoundedRect(0.0, 0.0, float(width), float(height), radius, radius)
+            painter.fillPath(path, track)
 
-        knob_size = height - 2 * _KNOB_MARGIN
-        travel = width - knob_size - 2 * _KNOB_MARGIN
-        x = _KNOB_MARGIN + travel * self._offset
-        knob = QColor(palette.brightText().color() if False else Qt.white)
-        if not enabled:
-            knob.setAlpha(150)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(knob)
-        painter.drawEllipse(x, float(_KNOB_MARGIN), float(knob_size), float(knob_size))
-        painter.end()
+            knob_size = height - 2 * _KNOB_MARGIN
+            travel = width - knob_size - 2 * _KNOB_MARGIN
+            x = _KNOB_MARGIN + travel * self._offset
+            knob = QColor(palette.brightText().color() if False else Qt.white)
+            if not enabled:
+                knob.setAlpha(150)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(knob)
+            painter.drawEllipse(x, float(_KNOB_MARGIN), float(knob_size), float(knob_size))
 
 
 __all__ = ["ToggleSwitch"]

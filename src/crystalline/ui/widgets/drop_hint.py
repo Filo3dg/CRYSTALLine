@@ -73,66 +73,72 @@ class DropHint(ParentOverlay):
 
     @guard()
     def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        palette = self.palette()
-        accent = palette.highlight().color()
+        # ``with``, not a bare end() at the bottom: if anything in here
+        # raises, the guard above catches it, and a painter left active
+        # keeps Qt painting on this widget for as long as the report
+        # holds the traceback. Destroying the device then takes the
+        # process down, far from the line that failed.
+        with QPainter(self) as painter:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            palette = self.palette()
+            accent = palette.highlight().color()
 
-        scrim = QColor(palette.window().color())
-        scrim.setAlpha(_SCRIM_ALPHA)
-        painter.fillRect(self.rect(), scrim)
+            scrim = QColor(palette.window().color())
+            scrim.setAlpha(_SCRIM_ALPHA)
+            painter.fillRect(self.rect(), scrim)
 
-        frame = QRectF(self.rect()).adjusted(_INSET, _INSET, -_INSET, -_INSET)
-        tint = QColor(accent)
-        tint.setAlpha(_TINT_ALPHA)
-        painter.setBrush(tint)
-        pen = QPen(accent, _BORDER_WIDTH)
-        pen.setStyle(Qt.CustomDashLine)
-        pen.setDashPattern(list(_DASH))
-        painter.setPen(pen)
-        painter.drawRoundedRect(frame, _RADIUS, _RADIUS)
+            frame = QRectF(self.rect()).adjusted(_INSET, _INSET, -_INSET, -_INSET)
+            tint = QColor(accent)
+            tint.setAlpha(_TINT_ALPHA)
+            painter.setBrush(tint)
+            pen = QPen(accent, _BORDER_WIDTH)
+            pen.setStyle(Qt.CustomDashLine)
+            pen.setDashPattern(list(_DASH))
+            painter.setPen(pen)
+            painter.drawRoundedRect(frame, _RADIUS, _RADIUS)
 
-        title_font, detail_font = self._fonts()
-        title_metrics, detail_metrics = QFontMetrics(title_font), QFontMetrics(detail_font)
-        # A CRYSTAL output's name is routinely sixty characters of run
-        # parameters, which is far wider than any sensible card. Elided in the
-        # middle, so the stem and the extension — the two halves that say which
-        # file this is — both survive.
-        limit = min(_CARD_MAX_WIDTH, max(120, self.width() - 2 * (_INSET + _CARD_PADDING_X)))
-        title = title_metrics.elidedText(self._title, Qt.ElideMiddle, limit)
-        detail = detail_metrics.elidedText(self._detail, Qt.ElideRight, limit)
+            title_font, detail_font = self._fonts()
+            title_metrics = QFontMetrics(title_font)
+            detail_metrics = QFontMetrics(detail_font)
+            # A CRYSTAL output's name is routinely sixty characters of run
+            # parameters, which is far wider than any sensible card. Elided in the
+            # middle, so the stem and the extension — the two halves that say which
+            # file this is — both survive.
+            room = self.width() - 2 * (_INSET + _CARD_PADDING_X)
+            limit = min(_CARD_MAX_WIDTH, max(120, room))
+            title = title_metrics.elidedText(self._title, Qt.ElideMiddle, limit)
+            detail = detail_metrics.elidedText(self._detail, Qt.ElideRight, limit)
 
-        text_width = max(title_metrics.horizontalAdvance(title),
-                         detail_metrics.horizontalAdvance(detail))
-        text_height = title_metrics.height() + (
-            _LINE_GAP + detail_metrics.height() if detail else 0
-        )
-        card = QRectF(
-            0.0, 0.0,
-            text_width + 2 * _CARD_PADDING_X,
-            text_height + 2 * _CARD_PADDING_Y,
-        )
-        card.moveCenter(QRectF(self.rect()).center())
+            text_width = max(title_metrics.horizontalAdvance(title),
+                             detail_metrics.horizontalAdvance(detail))
+            text_height = title_metrics.height() + (
+                _LINE_GAP + detail_metrics.height() if detail else 0
+            )
+            card = QRectF(
+                0.0, 0.0,
+                text_width + 2 * _CARD_PADDING_X,
+                text_height + 2 * _CARD_PADDING_Y,
+            )
+            card.moveCenter(QRectF(self.rect()).center())
 
-        surface = QColor(palette.window().color())
-        surface.setAlpha(_CARD_ALPHA)
-        painter.setBrush(surface)
-        painter.setPen(QPen(accent, 1))
-        painter.drawRoundedRect(card, _CARD_RADIUS, _CARD_RADIUS)
+            surface = QColor(palette.window().color())
+            surface.setAlpha(_CARD_ALPHA)
+            painter.setBrush(surface)
+            painter.setPen(QPen(accent, 1))
+            painter.drawRoundedRect(card, _CARD_RADIUS, _CARD_RADIUS)
 
-        line = card.adjusted(_CARD_PADDING_X, _CARD_PADDING_Y,
-                             -_CARD_PADDING_X, -_CARD_PADDING_Y)
-        painter.setFont(title_font)
-        painter.setPen(palette.windowText().color())
-        painter.drawText(
-            line.adjusted(0, 0, 0, -(text_height - title_metrics.height())),
-            Qt.AlignHCenter | Qt.AlignTop, title,
-        )
-        if detail:
-            painter.setFont(detail_font)
-            painter.setPen(palette.mid().color())
-            painter.drawText(line, Qt.AlignHCenter | Qt.AlignBottom, detail)
-        painter.end()
+            line = card.adjusted(_CARD_PADDING_X, _CARD_PADDING_Y,
+                                 -_CARD_PADDING_X, -_CARD_PADDING_Y)
+            painter.setFont(title_font)
+            painter.setPen(palette.windowText().color())
+            painter.drawText(
+                line.adjusted(0, 0, 0, -(text_height - title_metrics.height())),
+                Qt.AlignHCenter | Qt.AlignTop, title,
+            )
+            if detail:
+                painter.setFont(detail_font)
+                painter.setPen(palette.mid().color())
+                painter.drawText(line, Qt.AlignHCenter | Qt.AlignBottom, detail)
 
 
 __all__ = ["DropHint"]

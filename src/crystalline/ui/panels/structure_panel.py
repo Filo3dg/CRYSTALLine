@@ -205,13 +205,13 @@ class StructurePanel(QWidget):
 
     # ── helpers ─────────────────────────────────────────────────────────
     def _default_position(self) -> list:
-        """Where a newly added atom appears: cell centre, else the origin."""
-        import numpy as np
+        """Where a newly added atom appears: the middle of the structure.
 
-        cell = self._structure.cell
-        if self._structure.is_periodic and not np.allclose(cell, 0.0):
-            return list(0.5 * cell.sum(axis=0))
-        return [0.0, 0.0, 0.0]
+        Not the centre of the cell, which across a slab's or a polymer's formal
+        500 Å of vacuum is 250 Å from anything — the atom was added and selected
+        where it could be neither seen nor picked.
+        """
+        return [float(x) for x in self._structure.centre()]
 
 
 __all__ = ["StructurePanel"]

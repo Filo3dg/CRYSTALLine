@@ -66,6 +66,22 @@ _CHARACTER_MIN_HEIGHT = 32
 _FRAME_INTERVAL_MS = 33
 _FRAMES_PER_CYCLE = 60  # at speed 1.0: one full vibration in ~2 s
 _PHASE_STEP = 2.0 * math.pi / _FRAMES_PER_CYCLE
+# Where the cycle is parked when nothing is playing. A displacement is
+# ``Re[e exp(-i*phase)]`` (``core.phonons``), so a mode at Gamma is at full
+# stretch at phase 0 and at rest a quarter cycle on. Parking there is what lets
+# picking a mode leave the geometry alone and Play ease out of the equilibrium
+# instead of snapping to the extremum on its first frame.
+#
+# It belongs here rather than inside the displacement: the arrow field of a
+# still picture is drawn at phase 0 precisely because that is ``Re(e)``, the
+# IN-PHASE block CRYSTAL prints, and a quarter cycle added down there would
+# leave a Gamma mode with no arrows at all. The animation's clock and the
+# instant a still shows are two different things.
+#
+# Away from Gamma no instant has every atom at rest — a travelling wave never
+# stops — so this parks the reference cell, and the rest of them keep whatever
+# phase their own cell gives them.
+_START_PHASE = 0.5 * math.pi
 
 # The largest share of the event loop the animation may take. A frame is a VTK
 # rebuild plus a synchronous render, and on a large cell that costs more than the
@@ -131,7 +147,7 @@ class PhononPanel(QWidget):
         self._numbers: Optional[np.ndarray] = None      # atomic numbers of the geometry
         self._characters: list[ModeCharacter] = []      # per mode, parallel to self._modes
 
-        self._phase = 0.0
+        self._phase = _START_PHASE
         self._speed = 1.0
         # Earliest time the next frame may be drawn, as a perf_counter reading.
         # Set from how long the last frame actually took — see _on_timer.
@@ -158,6 +174,16 @@ class PhononPanel(QWidget):
         head_row.addSpacing(6)
         head_row.addWidget(QLabel("Vibrational modes"), 1)
         layout.addLayout(head_row)
+
+        # Why there is nothing to animate, when there is a reason worth giving.
+        # A panel that empties itself and greys out says only that something
+        # happened; this says what, and what to do about it. Kept outside the
+        # controls so it reads as a statement about them rather than one of them.
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet("color: palette(mid);")
+        self.note.setVisible(False)
+        layout.addWidget(self.note)
 
         # q-point row: only a dispersion (SCELPHONO) run has anything to choose,
         # so the whole row is hidden for the ordinary Gamma-only calculation.
@@ -293,6 +319,7 @@ class PhononPanel(QWidget):
         self._equilibrium = np.asarray(equilibrium, dtype=float)
         self._numbers = None if numbers is None else np.asarray(numbers, dtype=int)
         self._characters = self._analyse(modes)
+        self.set_note()  # there is something to animate again
         self._set_filter_available(modes.has_activity)
         self._populate()
         self.setEnabled(len(modes) > 0)
@@ -446,6 +473,15 @@ class PhononPanel(QWidget):
         """Whether a mode is currently selected (so it can be animated/exported)."""
         return self.current_mode_index() is not None
 
+    def has_modes(self) -> bool:
+        """Whether any modes are loaded at all, selected or not."""
+        return self._modes is not None and len(self._modes) > 0
+
+    def set_note(self, text: str = "") -> None:
+        """Say why there is nothing to animate; empty text takes the line away."""
+        self.note.setText(text)
+        self.note.setVisible(bool(text))
+
     def current_mode_index(self) -> Optional[int]:
         """Index into the loaded modes of the selected row, or ``None``.
 
@@ -482,6 +518,7 @@ class PhononPanel(QWidget):
         self._rows = []
         self.mode_list.clear()
         self.character_label.clear()
+        self.set_note()  # whatever it said was about the modes just dropped
         self._set_filter_available(False)
         self.set_qpoints([])  # the new file's q-points are the window's to supply
         self.setEnabled(False)
@@ -542,8 +579,8 @@ class PhononPanel(QWidget):
             return
         index = self._rows[row]
         self._animator.set_mode(self._equilibrium, self._modes[index])
-        self._phase = 0.0
-        self._animator.set_frame(0.0)
+        self._phase = _START_PHASE
+        self._animator.set_frame(self._phase)
         character = self.character(index)
         self.character_label.setText("" if character is None else character.summary(limit=4))
         self.mode_selected.emit(index)
@@ -636,9 +673,9 @@ class PhononPanel(QWidget):
     def _stop(self) -> None:
         self._held = False  # nothing to resume: Stop is the user's own decision
         self._timer.stop()
-        # Back to phase 0 as well as to the equilibrium geometry, so the next
-        # Play starts from rest instead of jumping into mid-cycle.
-        self._phase = 0.0
+        # Back to the start of the cycle as well as to the equilibrium geometry,
+        # so the next Play starts from rest instead of jumping into mid-cycle.
+        self._phase = _START_PHASE
         self._animator.reset()
 
     def _on_timer(self) -> None:

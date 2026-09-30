@@ -1,9 +1,13 @@
 # Editing structures
 
-Editing is enabled by **Edit → Editing mode** ({kbd}`Ctrl+E`). All operations
-can be undone ({kbd}`Ctrl+Z`; redo with {kbd}`Ctrl+Shift+Z` or {kbd}`Ctrl+Y`),
-and **Edit → Restore geometry** ({kbd}`Ctrl+R`) returns the structure to the
-state in which it was read.
+Editing is enabled by **Edit → Editing mode** ({kbd}`Ctrl+E`). Every operation
+can be undone ({kbd}`Ctrl+Z`; redo with {kbd}`Ctrl+Shift+Z` or {kbd}`Ctrl+Y`) —
+a supercell and a change of lattice parameters included, so edits made before
+one are still there underneath it. Switching between the crystallographic and
+primitive settings is not an undo step: it is a way of looking at a crystal
+rather than a change to it. It does discard edits made to the cell on screen,
+and *that* is undoable. **Edit → Restore geometry** ({kbd}`Ctrl+R`) returns a
+structure to the state in which it was read.
 
 ## Selection
 
@@ -20,6 +24,12 @@ selection by a small step, and **Edit → Translate selected…** applies a give
 displacement.
 
 ## Adding and removing atoms
+
+**Add atom** in the Structure panel adds one atom of the element chosen beside
+it. It appears in the middle of the structure — the middle of the cell along
+each direction that repeats, and among the atoms along each direction that does
+not, so that a new atom on a slab or a polymer lands on it rather than out in
+the vacuum — and is selected, ready to be dragged or given exact coordinates.
 
 - **Delete selected** ({kbd}`Del`)
 - **Duplicate selected** ({kbd}`Ctrl+D`)

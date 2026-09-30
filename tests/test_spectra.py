@@ -12,6 +12,7 @@ import os
 import numpy as np
 import pytest
 
+import sample_data as sample  # noqa: E402
 from crystalline.crystalio.spectra import (
     SpectrumKind,
     _parse,
@@ -88,11 +89,7 @@ def test_menu_order_is_ir_then_raman_harmonic_then_anharmonic():
 # VSCF/VCI attributes the way its docstring says.
 # Narrowed to the CRYSTAL output itself: the same directories hold scheduler
 # logs, which are also ``.out`` and carry no spectra at all.
-_ANHARM = sorted(
-    glob.glob(
-        os.path.expanduser("~/Desktop/PyCrystal/anharmonic_freq/CO2_molecule/*/co2_anh_*.out")
-    )
-)
+_ANHARM = sample.matches("co2/*/co2_anh_*.out")
 
 
 @pytest.mark.skipif(not _ANHARM, reason="no sample anharmonic .out available")
