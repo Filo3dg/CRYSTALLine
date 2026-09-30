@@ -18,17 +18,16 @@
 
 ::::
 
-CRYSTALLine is a program to build, display and manipulate the structures used by
-the [CRYSTAL](https://www.crystal.unito.it/) quantum-chemistry code, to animate
-the vibrational modes computed from them, and to plot the properties that a
-calculation returns. It runs on Linux, macOS and Windows, and is built on the
-[CRYSTALClear](https://github.com/crystaldevs/CRYSTALClear) library.
+CRYSTALLine builds, displays and edits structures for the
+[CRYSTAL](https://www.crystal.unito.it/) quantum-chemistry code, animates
+vibrational modes computed from them, and plots properties a calculation
+returns. It runs on Linux, macOS and Windows, and is built on
+[CRYSTALClear](https://github.com/crystaldevs/CRYSTALClear).
 
-It follows in the tradition of
-[MOLDRAW](https://www.moldraw.unito.it/), written by Prof. Piero Ugliengo, which
-served the CRYSTAL community for over twenty years: a program on your own
-machine, for looking at a structure and changing it, rather than a script to be
-written each time.
+It follows in the tradition of [MOLDRAW](https://www.moldraw.unito.it/),
+written by Prof. Piero Ugliengo, which served the CRYSTAL community for over 
+twenty years: a program on your own machine, for looking at a structure and 
+changing it, rather than a script to be written each time.
 
 CRYSTALLine is free software under the
 [GNU General Public License v3](https://github.com/crystaldevs/CRYSTALLine/blob/main/LICENSE).
@@ -38,57 +37,62 @@ CRYSTALLine is free software under the
 :::
 
 :::{div} crystal-caption
-The main window: the crystallography of the loaded structure on the left, the
-interactive view in the centre, the vibrational modes on the right.
+Main window: crystallography on the left, an interactive view in the centre,
+vibrational modes on the right.
 :::
 
 ## Main features
 
-1. **Structure display.** Atoms, bonds, hydrogen bonds, coordination polyhedra
-   and the unit cell, drawn in an interactive 3D view. Every element of the
-   drawing can be configured from the Display panel.
-2. **Crystallography.** The space group of a crystal, the layer group of a slab
-   or the point group of a molecule, with the lattice parameters, cell volume,
-   density and formula; a polymer is reported by its repeat length, since no
-   library names rod groups. These are recomputed whenever the structure is
-   edited.
-3. **Structure manipulation.** Atoms can be selected, moved, added, deleted,
-   duplicated and changed in element; cells can be converted between primitive
-   and crystallographic settings, expanded into supercells and edited through
-   their lattice parameters. All operations can be undone.
-4. **Vibrational modes.** Modes are read from the CRYSTAL output and animated in
-   place. Modes computed away from Γ by a dispersion calculation are animated
-   as travelling waves, and the cell can be tiled over one period. Animations
-   are exported as GIF, as a sequence of frames, or as MP4, MOV and WebM.
-5. **Input preparation.** Input decks for both CRYSTAL (`.d12`) and PROPERTIES 
-   (`.d3`) are written from the structure on screen, with a
-   preview of the file before it is saved. The band path can be defined by
-   clicking the points of the Brillouin zone.
-6. **Property plots.** Electronic band structures and densities of states, IR
-   and Raman spectra (harmonic and anharmonic), elastic properties, equations of
-   state, phonon bands and densities of states, and simulated XRD patterns.
-7. **Densities in space.** Crystalline orbitals, the charge and spin densities
-   and the electrostatic potential are drawn over the structure itself, as
-   isosurfaces or as slices through the cell, on the grid CRYSTAL computed them
-   on.
+1. **Every periodicity, treated as itself.** A space group for a crystal, a
+   layer group for a slab, a point group for a molecule — with lattice
+   parameters, volume, density and formula beside it, all recomputed the moment
+   you change anything. 
+2. **Structures you edit by hand.** Drag an atom across the view and bonds,
+   polyhedra and hydrogen bonds follow it there. Add, delete, duplicate or
+   change atoms; expand a supercell; swap between primitive and
+   crystallographic settings; retype lattice parameters. Undo reaches back
+   through all of it.
+3. **Modes that move.** Vibrational modes read straight out of a CRYSTAL output
+   and animated on your structure. Away from Γ they travel as waves — tile a
+   cell over one period and watch one pass through it. Keep what you see as a
+   GIF, as numbered frames, or as MP4, MOV or WebM.
+4. **Decks written from what is on screen.** CRYSTAL (`.d12`) and PROPERTIES
+   (`.d3`) inputs, shown in full before you save them. Set a band path by
+   clicking corners of a Brillouin zone instead of looking coordinates up.
+5. **Plots of whatever came back.** Electronic band structures and densities of
+   states, IR and Raman spectra (harmonic and anharmonic), elastic surfaces and
+   sections through them, equations of state, phonon bands and densities of
+   states, simulated XRD patterns.
+6. **Densities drawn over the atoms.** Crystalline orbitals, charge and spin
+   densities, electrostatic potential — as isosurfaces, or sliced open along a
+   lattice plane, on whatever grid CRYSTAL computed them on.
+7. **A view under your control.** Atoms, bonds, hydrogen bonds, coordination
+   polyhedra, cell edges: each one switched and styled from the Display panel.
 
 ## Not supported yet
 
-**The symmetry of a polymer (1D).** A polymer is read, drawn, edited and given
+**Symmetry of a polymer (1D).** A polymer is read, drawn, edited and given
 a band path like any other structure, but its symmetry is a rod group, and no
-rod group is named: the library used here implements the 230 space groups and
-the 80 layer groups, not the 75 rod groups. A polymer is therefore reported by
+rod group is named: spglib, which names groups here, implements 230 space
+groups and 80 layer groups, but no rod groups. A polymer is therefore reported by
 its repeat length, its symmetry cannot be lowered, and its decks are written in
-rod group 1 with every atom listed. Molecules, slabs and crystals are
-unaffected.
+rod group 1 with every atom listed. 
+
+**TOPOND.** Topological analysis of electron density, which CRYSTAL runs
+through its [TOPOND](https://www.crystal.unito.it/topond.html) module, writes
+files of its own — critical points of density and of its Laplacian, and
+trajectories between them — none of which is read here.
+[TopIso3D Viewer](http://www.topiso3d.ufpb.br/) is written for that output and
+draws it as three-dimensional maps. Densities written by `ECH3` and `POT3` are
+another matter and are drawn here; see
+[Property plots](plots.md#electron-density-and-electrostatic-potential).
 
 ## Where to start
 
-[Installation](install.md) describes how to install the program and what to do
-if it does not start. [First steps](first-steps.md) describes the main window
-and how to open a file. The remaining pages of the User guide describe each part
-of the program, and the Reference pages list the menus, the file formats and the
-known problems.
+[Installation](install.md) covers installing CRYSTALLine, and what to do if it
+will not start. [First steps](first-steps.md) walks through a window and a file
+opened in it. Remaining User guide pages take each part of the program in turn;
+Reference pages list menus, file formats and known problems.
 
 ## Acknowledgments
 

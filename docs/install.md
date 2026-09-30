@@ -1,8 +1,7 @@
 # Installation
 
 CRYSTALLine is on [PyPI](https://pypi.org/project/CRYSTALLine/). It needs
-**Python 3.11 or newer** — the floor comes from pymatgen, not from CRYSTALLine
-itself.
+**Python 3.11 or newer**.
 
 It should be installed in an environment of its own rather than in the system
 Python. Either a conda environment or a virtual environment may be used; conda
@@ -42,7 +41,7 @@ with 3.12.
 
 If you have no CRYSTAL output to hand, take this one:
 {download}`mgo-example.zip <examples/mgo-example.zip>` (29 kB) — two small
-calculations on magnesium oxide, with everything each of them produced.
+calculations on magnesium oxide.
 
 Unpack it and, in `properties/`, open `mgo.out`. The Info panel names the space
 group, *Fm*-3*m* (No. 225). Then **Plot → Electronic bands & DOS**: the band

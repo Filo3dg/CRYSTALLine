@@ -30,6 +30,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from dataclasses import dataclass
+
 from crystalline.core.cells import (
     CellView,
     as_view,
@@ -46,6 +48,38 @@ from crystalline.core.undo import UndoHistory
 
 # Orbital energies are stored in Hartree and shown in the unit bands are quoted in.
 _HARTREE_TO_EV = 27.211386245988
+
+
+@dataclass(frozen=True)
+class _Snapshot:
+    """Everything undo has to put back to restore what was on screen.
+
+    An ordinary edit — a drag, an added atom — changes the shown structure, and
+    a snapshot of its atoms is enough to reverse it. Three Cell actions are not
+    like that. A supercell and boundary completion change how the view is
+    *derived* from the source; a cell-view switch changes it too; and a
+    lattice-parameter edit changes the source itself. None of them touch the
+    shown atoms in a way that can be replayed onto a differently-derived cell —
+    an atom index in a 2x2x1 supercell does not mean what it meant in the unit
+    cell — so each one used to clear the history instead, taking every edit
+    before it down as well.
+
+    Carrying the derivation alongside the atoms is what lets undo step back
+    through the lot: restore the source, put the three view settings back,
+    re-derive, and lay the shown atoms (edits included) over the result.
+    """
+
+    source: object        # ase.Atoms: the pristine cell the view derives from
+    shown: object         # ase.Atoms: what is on screen, edits included
+    view: CellView
+    supercell: tuple
+    boundary: bool
+    # Whether ``shown`` carried anything the source did not, at the moment this
+    # was taken. Restoring it has to put that back too: the restore itself looks
+    # like an edit from the outside (it goes through the structure's listeners),
+    # and a window left believing in edits that are not there treats the next
+    # cell-setting switch as destructive and records a step for it.
+    edited: bool = False
 from crystalline.viz.phonon_animator import PhononAnimator
 from crystalline.ui import menus
 from crystalline.ui.viewport import Viewport
@@ -98,6 +132,9 @@ class MainWindow(QMainWindow):
         self._cell_view = CellView.CRYSTALLOGRAPHIC
         self._supercell = (1, 1, 1)
         self._show_boundary = True  # show partially-belonging molecules by default
+        # Whether the shown structure carries edits the source does not, so that
+        # a re-derive can tell "nothing to lose" from "this discards work".
+        self._shown_edited = False
         self._editing = False
         self._modes: Optional[PhononModes] = None
         # Every q-point the run sampled (``[Gamma]`` for a plain FREQCALC, one
@@ -268,26 +305,47 @@ class MainWindow(QMainWindow):
         self._reconcile_modes_with_edit(s)
 
     # ── undo ────────────────────────────────────────────────────────────
-    def _capture_undo(self, s: Structure) -> None:
-        """Push the pre-edit snapshot so this change can be undone.
+    def _snapshot(self) -> _Snapshot:
+        """The shown state and the derivation that produced it — see :class:`_Snapshot`."""
+        return _Snapshot(
+            source=self._source.to_ase(),
+            shown=self.structure.to_ase() if self.structure is not None else None,
+            view=self._cell_view,
+            supercell=tuple(self._supercell),
+            boundary=bool(self._show_boundary),
+            edited=bool(self._shown_edited),
+        )
+
+    def _capture_undo(self, _structure: Optional[Structure] = None) -> None:
+        """Push the pre-change snapshot so this change can be undone.
 
         Each edit fires exactly one change notification; the baseline held from
-        the previous notification is the state *before* this edit, so it's what
-        an undo restores. Skipped while an undo is itself being applied.
+        the previous one is the state *before* this change, so it's what an undo
+        restores. Every re-derive of the view records here too, which is what
+        makes a supercell or a lattice-parameter change undoable rather than the
+        end of the timeline.
+
+        Skipped while an undo is itself being applied, and when the state is the
+        one already held: a rebuild that changed nothing — switching q-point
+        falls back to one — would otherwise leave an undo step that puts nothing
+        back.
         """
         if self._suppress_undo:
             return
-        self._history.record(s.to_ase())
+        snapshot = self._snapshot()
+        if snapshot == self._history.baseline:
+            return
+        self._history.record(snapshot)
         self._update_undo_action()
 
     def _reset_undo(self) -> None:
-        """Clear the undo history and re-baseline to the current structure.
+        """Clear the undo history and re-baseline to what is on screen.
 
-        Used when the shown structure is replaced wholesale (file load, cell
-        view, supercell, boundary, lattice parameters): edits don't carry across
-        those, so neither does their undo timeline.
+        For a new file only: nothing about the last one is worth stepping back
+        into. Everything else — edits and the Cell actions alike — records a
+        snapshot instead.
         """
-        self._history.reset(self.structure.to_ase() if self.structure is not None else None)
+        self._history.reset(self._snapshot() if self.structure is not None else None)
         self._update_undo_action()
 
     def _undo(self) -> None:
@@ -298,17 +356,65 @@ class MainWindow(QMainWindow):
         """Re-apply the most recently undone structure edit."""
         self._apply_history(self._history.redo())
 
-    def _apply_history(self, atoms) -> None:
-        """Restore a snapshot returned by undo()/redo() (shared plumbing)."""
-        if atoms is None:
+    def _apply_history(self, snapshot) -> None:
+        """Restore a snapshot returned by undo()/redo() (shared plumbing).
+
+        An edit is put back by restoring the shown atoms, which is cheap and
+        leaves the view alone. When the derivation itself is what changed — a
+        supercell, a cell view, boundary completion, or a lattice edit that
+        moved the source under it — the source and the three view settings go
+        back first and the view is rebuilt from them; the shown atoms are then
+        laid over the result, since they may carry edits made after that
+        derivation.
+        """
+        if snapshot is None:
             return
         self._suppress_undo = True
         try:
-            self.structure.restore(atoms)  # listeners redraw; capture suppressed
+            if self._derivation_matches(snapshot):
+                self.structure.restore(snapshot.shown)  # listeners redraw
+            else:
+                self._source.restore(snapshot.source)
+                self._cell_view = snapshot.view
+                self._set_supercell(snapshot.supercell)
+                self._show_boundary = snapshot.boundary
+                self._apply_cell_view()
+                self.structure.restore(snapshot.shown)
+                self._update_cell_view_controls()
+                self._update_boundary_control()
+            # After the restores, not before: each of them runs the structure's
+            # listeners, and ``_note_edited`` is one of them.
+            self._shown_edited = snapshot.edited
         finally:
             self._suppress_undo = False
         self.structure_panel.clear_selection()  # indices may no longer be valid
         self._update_undo_action()
+
+    def _note_edited(self, _structure: Structure) -> None:
+        """Remember that the shown cell now carries something the source does not.
+
+        A listener of its own rather than a line in
+        :meth:`_on_structure_changed`, so it holds for every change however it
+        arrives, and so a caller that rebuilds the view cannot forget it.
+        """
+        self._shown_edited = True
+
+    def _derivation_matches(self, snapshot) -> bool:
+        """Whether the view is already derived the way ``snapshot`` was."""
+        return (
+            snapshot.view is self._cell_view
+            and tuple(snapshot.supercell) == tuple(self._supercell)
+            and bool(snapshot.boundary) == bool(self._show_boundary)
+            and snapshot.source == self._source.to_ase()
+        )
+
+    def _update_boundary_control(self) -> None:
+        """Tick the boundary entry for the view actually shown, without re-deriving it."""
+        action = getattr(self, "_boundary_action", None)
+        if action is not None:
+            blocked = action.blockSignals(True)
+            action.setChecked(self._show_boundary)
+            action.blockSignals(blocked)
 
     def _update_undo_action(self) -> None:
         undo = getattr(self, "_undo_action", None)
@@ -429,7 +535,26 @@ class MainWindow(QMainWindow):
         if view is self._cell_view:
             return
         self._cell_view = view
-        self._apply_cell_view()
+        # Which of the two settings a crystal is drawn in is a way of looking at
+        # it, not a change to it, so switching is no undo step of its own and
+        # Ctrl+Z goes on belonging to the edits. The baseline still moves with
+        # it, or the next edit would push the *old* setting onto the stack and
+        # undoing that edit would flip the cell as well.
+        #
+        # Unless there were edits to lose. This re-derives from the source, so
+        # anything done to the shown structure since it was built is dropped
+        # here — that is a change, it is the only copy of that work, and it is
+        # recorded so undo can step back to it, setting and all.
+        if self._shown_edited:
+            self._apply_cell_view()
+        else:
+            self._suppress_undo = True
+            try:
+                self._apply_cell_view()
+            finally:
+                self._suppress_undo = False
+            self._history.rebase(self._snapshot())
+            self._update_undo_action()
         self._update_cell_view_controls()
 
     def _update_cell_view_controls(self) -> None:
@@ -2047,6 +2172,9 @@ class MainWindow(QMainWindow):
         self._update_anscan_action()
         self._update_pes_action()
         self._update_import_action()  # a structure is now loaded — allow importing
+        # A new file starts its own timeline: nothing about the last one is
+        # worth stepping back into.
+        self._reset_undo()
         # An output whose modes could not be read opens with its geometry alone.
         # Said here because nothing else says it: the Phonons panel of a file
         # with no modes at all looks exactly the same, so without this the file
@@ -2427,6 +2555,11 @@ class MainWindow(QMainWindow):
         # whatever that now is — taking a supercell redraws it over the supercell.
         if self._orbital is not None:
             self._refresh_orbital()
+        # Every Cell action funnels through here, so this one line is what makes
+        # a supercell, a cell-view switch, boundary completion and a lattice
+        # edit undoable. A load resets the history afterwards; an undo rebuilding
+        # the view has capture suppressed.
+        self._capture_undo()
 
     def _compose_view(self, view: CellView, supercell, modes):
         """Return ``(structure, modes, unit_cell, analysis, adp)`` for the view.
@@ -2481,10 +2614,12 @@ class MainWindow(QMainWindow):
         of edits), so they must track the structure being shown.
         """
         self.structure = new
+        self._shown_edited = False  # freshly derived: nothing on it the source lacks
         if unit_cell is not None:
             self._unit_cell = unit_cell
         if bond_structure is not None:
             self._bond_structure = bond_structure
+        self.structure.add_listener(self._note_edited)  # before the heavier one
         self.structure.add_listener(self._on_structure_changed)
         self.viewport.show_structure(
             self.structure, reference_cell=unit_cell, bond_structure=bond_structure
@@ -2494,7 +2629,6 @@ class MainWindow(QMainWindow):
             self.geometry_panel.set_structure(self.structure)
         if hasattr(self, "symmetry_panel"):
             self.symmetry_panel.set_structure(self._analysis_cell())
-        self._reset_undo()  # edits (and their undo history) don't cross a re-derive
         self._update_view_actions()  # a/b/c alignment depends on the cell just shown
         if hasattr(self, "display_panel"):
             self.display_panel.set_elements(self.structure.numbers)  # refresh element swatches

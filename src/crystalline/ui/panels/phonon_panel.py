@@ -66,6 +66,22 @@ _CHARACTER_MIN_HEIGHT = 32
 _FRAME_INTERVAL_MS = 33
 _FRAMES_PER_CYCLE = 60  # at speed 1.0: one full vibration in ~2 s
 _PHASE_STEP = 2.0 * math.pi / _FRAMES_PER_CYCLE
+# Where the cycle is parked when nothing is playing. A displacement is
+# ``Re[e exp(-i*phase)]`` (``core.phonons``), so a mode at Gamma is at full
+# stretch at phase 0 and at rest a quarter cycle on. Parking there is what lets
+# picking a mode leave the geometry alone and Play ease out of the equilibrium
+# instead of snapping to the extremum on its first frame.
+#
+# It belongs here rather than inside the displacement: the arrow field of a
+# still picture is drawn at phase 0 precisely because that is ``Re(e)``, the
+# IN-PHASE block CRYSTAL prints, and a quarter cycle added down there would
+# leave a Gamma mode with no arrows at all. The animation's clock and the
+# instant a still shows are two different things.
+#
+# Away from Gamma no instant has every atom at rest — a travelling wave never
+# stops — so this parks the reference cell, and the rest of them keep whatever
+# phase their own cell gives them.
+_START_PHASE = 0.5 * math.pi
 
 # The largest share of the event loop the animation may take. A frame is a VTK
 # rebuild plus a synchronous render, and on a large cell that costs more than the
@@ -131,7 +147,7 @@ class PhononPanel(QWidget):
         self._numbers: Optional[np.ndarray] = None      # atomic numbers of the geometry
         self._characters: list[ModeCharacter] = []      # per mode, parallel to self._modes
 
-        self._phase = 0.0
+        self._phase = _START_PHASE
         self._speed = 1.0
         # Earliest time the next frame may be drawn, as a perf_counter reading.
         # Set from how long the last frame actually took — see _on_timer.
@@ -563,8 +579,8 @@ class PhononPanel(QWidget):
             return
         index = self._rows[row]
         self._animator.set_mode(self._equilibrium, self._modes[index])
-        self._phase = 0.0
-        self._animator.set_frame(0.0)
+        self._phase = _START_PHASE
+        self._animator.set_frame(self._phase)
         character = self.character(index)
         self.character_label.setText("" if character is None else character.summary(limit=4))
         self.mode_selected.emit(index)
@@ -657,9 +673,9 @@ class PhononPanel(QWidget):
     def _stop(self) -> None:
         self._held = False  # nothing to resume: Stop is the user's own decision
         self._timer.stop()
-        # Back to phase 0 as well as to the equilibrium geometry, so the next
-        # Play starts from rest instead of jumping into mid-cycle.
-        self._phase = 0.0
+        # Back to the start of the cycle as well as to the equilibrium geometry,
+        # so the next Play starts from rest instead of jumping into mid-cycle.
+        self._phase = _START_PHASE
         self._animator.reset()
 
     def _on_timer(self) -> None:

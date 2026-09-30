@@ -67,7 +67,7 @@ only in editing mode.
 | --- | --- |
 | Appearance | Match system, Light, Dark |
 | Display settings | the Display panel |
-| Panels | show one panel |
+| Panels | show or hide each panel |
 | Restore all panels | put every panel back |
 
 ## Plot
