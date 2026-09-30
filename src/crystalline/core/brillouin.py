@@ -102,6 +102,11 @@ def is_planar(structure: Structure) -> bool:
     return len(periodic_axes(structure)) == 2
 
 
+def is_linear(structure: Structure) -> bool:
+    """Exactly one periodic direction — the zone is a segment, not a solid."""
+    return len(periodic_axes(structure)) == 1
+
+
 def brillouin_zone(structure: Structure) -> Tuple[np.ndarray, List[List[int]]]:
     """The first Brillouin zone as ``(vertices, faces)``.
 
@@ -114,7 +119,14 @@ def brillouin_zone(structure: Structure) -> Tuple[np.ndarray, List[List[int]]]:
     full 3×3 cell would use the vacuum as a lattice vector — giving a thin
     solid whose thickness is an artefact of how much empty space was left
     around the layer.
+
+    A polymer gets a *segment*, for the same reason twice over: built from the
+    full cell, its zone came out as a needle a five-hundredth of an inverse
+    ångström across, which is the width of the vacuum CRYSTAL writes across a
+    chain and nothing about the crystal.
     """
+    if is_linear(structure):
+        return _linear_zone(structure)
     if is_planar(structure):
         return _planar_zone(structure)
     from scipy.spatial import Voronoi
@@ -157,6 +169,32 @@ def plane_reciprocal(structure: Structure) -> np.ndarray:
     if abs(np.linalg.det(metric)) < 1e-12:
         raise ValueError("This slab has no usable lattice.")
     return np.linalg.inv(metric) @ plane                # (2, 3), rows are b1, b2
+
+
+def line_reciprocal(structure: Structure) -> np.ndarray:
+    """The one reciprocal vector of a polymer, as a cartesian row (1, 3).
+
+    Defined by ``b · a = 1`` along the chain — the 1D counterpart of the
+    convention used for a crystal and a slab, and nothing to do with the two
+    directions the chain does not repeat in.
+    """
+    cell = np.asarray(structure.cell, dtype=float)
+    axis = periodic_axes(structure)[0]
+    vector = cell[axis]
+    length = float(vector @ vector)
+    if length < 1e-12:
+        raise ValueError("This polymer has no usable lattice.")
+    return (vector / length).reshape(1, 3)
+
+
+def _linear_zone(structure: Structure) -> Tuple[np.ndarray, List[List[int]]]:
+    """The Wigner-Seitz cell of a 1D reciprocal lattice: the segment ±b/2.
+
+    Returned as two vertices and one two-point "face", which draws as the line
+    it is; the caller fills a polygon only when it has three corners or more.
+    """
+    b = line_reciprocal(structure)[0]
+    return np.array([-b / 2.0, b / 2.0]), [[0, 1]]
 
 
 def _planar_zone(structure: Structure) -> Tuple[np.ndarray, List[List[int]]]:

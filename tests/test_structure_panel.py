@@ -61,3 +61,58 @@ def test_editing_gate_controls(qapp):
 
     panel.set_selection([1, 2])  # multi-selection -> single-atom editor off
     assert not panel.editor.isEnabled()
+
+
+def test_an_atom_added_to_a_slab_lands_on_the_slab(qapp):
+    """The Add atom button, on a structure that is not a crystal.
+
+    CRYSTAL writes a formal 500 Å across the direction a slab does not repeat
+    in, and the button used to drop the atom at the centre of that cell — 250 Å
+    above the surface. It was added and selected, off screen and out of reach of
+    the picker, which is indistinguishable from nothing having happened.
+    """
+    import numpy as np
+    from ase.build import fcc111
+
+    slab = fcc111("Pt", size=(2, 2, 3), vacuum=0.0)
+    cell = np.asarray(slab.get_cell(), dtype=float)
+    cell[2] = [0.0, 0.0, 500.0]
+    slab.set_cell(cell)
+    slab.pbc = [True, True, False]
+    structure = Structure.from_ase(slab)
+    surface = np.asarray(structure.positions)[:, 2].max()
+
+    panel = StructurePanel(structure)
+    panel.set_editing_enabled(True)
+    panel.element_box.setCurrentText("O")
+    panel.add_btn.click()
+
+    assert len(structure) == len(slab) + 1
+    added = np.asarray(structure.positions)[-1]
+    assert panel.selected_indices() == [len(structure) - 1]  # selected, ready to drag
+    assert added[2] < surface + 20.0, "the atom is out in the vacuum, not on the slab"
+
+
+def test_both_ways_of_adding_an_atom_agree_on_where_it_goes(qapp):
+    """The panel's button and the element picker's signal are separate paths,
+    and each had its own copy of "the centre of the cell" to get wrong."""
+    import numpy as np
+    from ase.build import fcc111
+
+    from crystalline.ui.main_window import MainWindow
+
+    slab = fcc111("Pt", size=(2, 2, 3), vacuum=0.0)
+    cell = np.asarray(slab.get_cell(), dtype=float)
+    cell[2] = [0.0, 0.0, 500.0]
+    slab.set_cell(cell)
+    slab.pbc = [True, True, False]
+    structure = Structure.from_ase(slab)
+
+    class _StubWindow:  # the method reads nothing else
+        pass
+
+    _StubWindow.structure = structure
+    _StubWindow._new_atom_position = MainWindow._new_atom_position
+
+    panel = StructurePanel(structure)
+    assert _StubWindow()._new_atom_position() == pytest.approx(panel._default_position())

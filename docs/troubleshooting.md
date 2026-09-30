@@ -56,6 +56,14 @@ require an output containing vibrational modes.
 The output must contain a frequency calculation. A single point or a geometry
 optimisation which ends before `FREQCALC` contains none.
 
+An output which does contain one, but whose modes cannot be read, opens with its
+geometry and reports why. The eigenvectors are read block by block, and a block
+is expected to hold nothing but its rows: a reduced-mass listing printed straight
+after them, a compiler's runtime notes, or the extra output of a patched build
+breaks it. Those lines are taken out of the blocks they landed in and the modes
+are read anyway; what remains is an output this program cannot read, and the
+message names the error.
+
 ## The band path is refused
 
 The path is written as integers divided by a shrinking factor. A factor which

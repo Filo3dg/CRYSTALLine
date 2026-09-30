@@ -38,6 +38,21 @@ crystalline
 Any version from 3.11 onwards may be used, including 3.14; releases are made
 with 3.12.
 
+## An example to open
+
+If you have no CRYSTAL output to hand, take this one:
+{download}`mgo-example.zip <examples/mgo-example.zip>` (29 kB) — two small
+calculations on magnesium oxide, with everything each of them produced.
+
+Unpack it and, in `properties/`, open `mgo.out`. The Info panel names the space
+group, *Fm*-3*m* (No. 225). Then **Plot → Electronic bands & DOS**: the band
+structure and the density of states are found beside the output.
+
+In `phonons/`, open `mgo_222_disp.out`. This one was run with `DISPERSI`, so the
+Phonons panel lists eight q points. Choose one away from Γ, pick a mode and
+press **Play**: it is animated as a travelling wave, and **Tile** repeats the
+cell over one wavelength.
+
 ## Optional components
 
 The export of animations as MP4, MOV or WebM requires an encoder. GIF and

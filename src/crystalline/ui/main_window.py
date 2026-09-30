@@ -106,6 +106,10 @@ class MainWindow(QMainWindow):
         # window rebuilds the view around it.
         self._qmodes: list = []
         self._qindex = 0
+        # How many atoms the modes the panel was last given describe, so an edit
+        # that puts that geometry back can have them back too. ``None`` when the
+        # panel has never been given any.
+        self._modes_natom: Optional[int] = None
         # Supercell to restore when the phonon panel's Untile is pressed, or
         # ``None`` when the tiling on screen is the user's own doing.
         self._tile_restore: Optional[tuple] = None
@@ -261,6 +265,7 @@ class MainWindow(QMainWindow):
         # positions avoids resetting atoms back to the stale equilibrium, which
         # would undo the edit that was just made.
         self.phonon_panel.invalidate_on_edit(s.positions)
+        self._reconcile_modes_with_edit(s)
 
     # ── undo ────────────────────────────────────────────────────────────
     def _capture_undo(self, s: Structure) -> None:
@@ -1602,11 +1607,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Unknown element", f"'{symbol}' is not a known element.")
 
     def _add_atom(self, symbol: str) -> None:
-        """Add one atom of ``symbol`` at the centre of the cell, and select it.
+        """Add one atom of ``symbol`` in the middle of the structure, and select it.
 
-        The centre is the obvious place to drop an atom you are about to drag
-        into position: inside the cell and away from the boundary. For a
-        non-periodic system it lands on the structure's centroid.
+        The middle is the obvious place to drop an atom you are about to drag
+        into position: among the atoms already there and away from the cell
+        boundary. What counts as the middle of a slab or a polymer is
+        :meth:`Structure.centre`, not the centre of the cell.
         """
         if not self._editing or not symbol.strip():
             return
@@ -1618,12 +1624,13 @@ class MainWindow(QMainWindow):
         self.structure_panel.set_selection([index])  # ready to drag / translate
 
     def _new_atom_position(self) -> list:
-        cell = np.asarray(self.structure.cell, dtype=float)
-        if self.structure.is_periodic and not np.allclose(cell, 0.0):
-            return list(0.5 * cell.sum(axis=0))
-        if len(self.structure):
-            return list(np.asarray(self.structure.positions, dtype=float).mean(axis=0))
-        return [0.0, 0.0, 0.0]
+        """The middle of the structure — see :meth:`Structure.centre`.
+
+        The centre of the whole cell was used here, which for a slab or a polymer
+        is 250 Å out in the vacuum CRYSTAL writes across the aperiodic
+        directions: the atom was added, and selected, somewhere off screen.
+        """
+        return [float(x) for x in self.structure.centre()]
 
     def _ask_vector(self):
         """Small dialog returning a cartesian (dx, dy, dz) shift, or None."""
@@ -1830,11 +1837,46 @@ class MainWindow(QMainWindow):
             return False
         if modes[0].n_atoms != len(self.structure):
             return False  # edited since: the modes and the atoms no longer line up
+        self._show_modes(modes)
+        self._update_export_actions()
+        return True
+
+    def _show_modes(self, modes) -> None:
+        """Hand composed modes to the panel, and remember the geometry they fit.
+
+        The atom count is what :meth:`_reconcile_modes_with_edit` needs later: a
+        mode carries one displacement per atom, so it applies to a structure of
+        that size and to no other.
+        """
         self.phonon_panel.set_modes(
             self.structure.positions, modes, self.structure.numbers
         )
-        self._update_export_actions()
-        return True
+        self._modes_natom = len(self.structure)
+
+    def _reconcile_modes_with_edit(self, s: Structure) -> None:
+        """Offer the file's modes back when an edit leaves them applicable again.
+
+        Adding or deleting an atom makes them inapplicable — there is no
+        displacement for an atom the calculation never saw — so the panel drops
+        them. Undoing that edit brings the geometry back, and the modes should
+        come back with it: the panel cannot know, having thrown them away, so it
+        used to stay empty and grey for the rest of the session however the
+        structure was put back. Moving an atom or changing an element keeps the
+        count, so the panel keeps the modes and this does nothing.
+
+        When they genuinely do not apply, the panel says so. Going quiet and
+        greying out says only that something happened.
+        """
+        if self.phonon_panel.has_modes() or self._modes is None:
+            return
+        if self._modes_natom == len(s) and self._reload_modes():
+            return
+        if self._modes_natom is not None:
+            self.phonon_panel.set_note(
+                f"The modes read from this file describe {self._modes_natom} atoms "
+                f"and the structure now has {len(s)}, so they cannot be shown on "
+                f"it. Undo the edit to animate them again."
+            )
 
     def _tile_to_qpoint(self, reps) -> None:
         """Tile the cell to one whole period of the selected q — or undo that.
@@ -2005,6 +2047,12 @@ class MainWindow(QMainWindow):
         self._update_anscan_action()
         self._update_pes_action()
         self._update_import_action()  # a structure is now loaded — allow importing
+        # An output whose modes could not be read opens with its geometry alone.
+        # Said here because nothing else says it: the Phonons panel of a file
+        # with no modes at all looks exactly the same, so without this the file
+        # appears to have been a geometry all along.
+        if result.note:
+            QMessageBox.warning(self, "Modes not read", result.note)
         return True
 
     def _import_atoms(self) -> None:
@@ -2370,11 +2418,10 @@ class MainWindow(QMainWindow):
         self._refresh_adp_tensors()
         self._update_adp_controls()
         if modes is not None:
-            self.phonon_panel.set_modes(
-                self.structure.positions, modes, self.structure.numbers
-            )
+            self._show_modes(modes)
         else:
             self.phonon_panel.clear()
+            self._modes_natom = None
         self._update_export_actions()  # modes may have appeared/disappeared
         # A shown orbital belongs to the cell on screen, so it is rebuilt across
         # whatever that now is — taking a supercell redraws it over the supercell.

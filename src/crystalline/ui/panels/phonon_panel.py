@@ -159,6 +159,16 @@ class PhononPanel(QWidget):
         head_row.addWidget(QLabel("Vibrational modes"), 1)
         layout.addLayout(head_row)
 
+        # Why there is nothing to animate, when there is a reason worth giving.
+        # A panel that empties itself and greys out says only that something
+        # happened; this says what, and what to do about it. Kept outside the
+        # controls so it reads as a statement about them rather than one of them.
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet("color: palette(mid);")
+        self.note.setVisible(False)
+        layout.addWidget(self.note)
+
         # q-point row: only a dispersion (SCELPHONO) run has anything to choose,
         # so the whole row is hidden for the ordinary Gamma-only calculation.
         self.qpoint_row = QWidget(self)
@@ -293,6 +303,7 @@ class PhononPanel(QWidget):
         self._equilibrium = np.asarray(equilibrium, dtype=float)
         self._numbers = None if numbers is None else np.asarray(numbers, dtype=int)
         self._characters = self._analyse(modes)
+        self.set_note()  # there is something to animate again
         self._set_filter_available(modes.has_activity)
         self._populate()
         self.setEnabled(len(modes) > 0)
@@ -446,6 +457,15 @@ class PhononPanel(QWidget):
         """Whether a mode is currently selected (so it can be animated/exported)."""
         return self.current_mode_index() is not None
 
+    def has_modes(self) -> bool:
+        """Whether any modes are loaded at all, selected or not."""
+        return self._modes is not None and len(self._modes) > 0
+
+    def set_note(self, text: str = "") -> None:
+        """Say why there is nothing to animate; empty text takes the line away."""
+        self.note.setText(text)
+        self.note.setVisible(bool(text))
+
     def current_mode_index(self) -> Optional[int]:
         """Index into the loaded modes of the selected row, or ``None``.
 
@@ -482,6 +502,7 @@ class PhononPanel(QWidget):
         self._rows = []
         self.mode_list.clear()
         self.character_label.clear()
+        self.set_note()  # whatever it said was about the modes just dropped
         self._set_filter_available(False)
         self.set_qpoints([])  # the new file's q-points are the window's to supply
         self.setEnabled(False)

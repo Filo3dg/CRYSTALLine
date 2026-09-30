@@ -107,7 +107,7 @@ def test_large_amplitude_would_break_bonds_without_the_reference():
         structure.positions,
         PhononMode(frequency=3600.0, eigenvector=eigenvector),
         amplitude=1.5,
-        phase=np.pi / 2,
+        phase=0.0,  # cos(0) = 1: the extremum of the cycle
     )
     i, _ = _bonded_pairs(stretched, renderer._numbers, renderer.settings.bond_tolerance)
     assert len(i) < 2
@@ -134,7 +134,7 @@ def test_large_cell_bonds_follow_the_atoms_during_animation():
         return np.array(renderer._bond_actor.GetMapper().GetInput().bounds)
 
     resting = bond_bounds()
-    animator.set_frame(np.pi / 2)
+    animator.set_frame(0.0)  # cos(0) = 1: the extremum of the cycle
     assert not np.allclose(resting, bond_bounds())  # the bonds moved with the atoms
 
 
@@ -164,5 +164,5 @@ def test_large_cell_keeps_every_bond_across_the_cycle():
     # ... and re-deriving from a displaced frame really would have lost some.
     from crystalline.core.phonons import displaced_positions
 
-    stretched = displaced_positions(equilibrium, mode, 1.5, np.pi / 2)
+    stretched = displaced_positions(equilibrium, mode, 1.5, 0.0)  # the extremum
     assert len(_bonded_pairs(stretched, structure.numbers, tolerance)[0]) < expected

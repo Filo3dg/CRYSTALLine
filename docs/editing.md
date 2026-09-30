@@ -21,6 +21,12 @@ displacement.
 
 ## Adding and removing atoms
 
+**Add atom** in the Structure panel adds one atom of the element chosen beside
+it. It appears in the middle of the structure — the middle of the cell along
+each direction that repeats, and among the atoms along each direction that does
+not, so that a new atom on a slab or a polymer lands on it rather than out in
+the vacuum — and is selected, ready to be dragged or given exact coordinates.
+
 - **Delete selected** ({kbd}`Del`)
 - **Duplicate selected** ({kbd}`Ctrl+D`)
 - **Set element of selected…**, which opens a periodic table

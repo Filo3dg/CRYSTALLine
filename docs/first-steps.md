@@ -6,6 +6,9 @@
 file (`.gui`, `.f34`) or a crystallographic information file (`.cif`). A file
 dropped on the window is opened in the same way.
 
+No output to hand? [Installation](install.md#an-example-to-open) offers a small
+MgO calculation to open.
+
 If the output contains a vibrational calculation, the modes are read with it.
 If it does not, the geometry alone is shown and the remaining functions are
 unaffected.

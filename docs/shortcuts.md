@@ -1,5 +1,11 @@
 # Menus and shortcuts
 
+:::{note}
+The shortcuts are written with {kbd}`Ctrl`, which is what they are on Linux
+and Windows. On macOS press {kbd}`⌘` wherever {kbd}`Ctrl` is written — Qt maps
+the two, so {kbd}`Ctrl+O` here is {kbd}`⌘O` on a Mac.
+:::
+
 ## Mouse
 
 | | |

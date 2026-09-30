@@ -1,4 +1,4 @@
-# Welcome to the CRYSTALLine home page!
+# Overview
 
 ::::{div} crystal-hero
 
@@ -72,6 +72,16 @@ interactive view in the centre, the vibrational modes on the right.
    isosurfaces or as slices through the cell, on the grid CRYSTAL computed them
    on.
 
+## Not supported yet
+
+**The symmetry of a polymer (1D).** A polymer is read, drawn, edited and given
+a band path like any other structure, but its symmetry is a rod group, and no
+rod group is named: the library used here implements the 230 space groups and
+the 80 layer groups, not the 75 rod groups. A polymer is therefore reported by
+its repeat length, its symmetry cannot be lowered, and its decks are written in
+rod group 1 with every atom listed. Molecules, slabs and crystals are
+unaffected.
+
 ## Where to start
 
 [Installation](install.md) describes how to install the program and what to do
@@ -84,12 +94,13 @@ known problems.
 
 CRYSTALLine is built on [CRYSTALClear](https://github.com/crystaldevs/CRYSTALClear),
 which reads the CRYSTAL output files and draws the property plots, and it uses
-[ASE](https://wiki.fysik.dtu.dk/ase/), [pymatgen](https://pymatgen.org/),
-[spglib](https://spglib.readthedocs.io/) and [PyVista](https://pyvista.org/).
+[ASE](https://ase-lib.org/), [pymatgen](https://pymatgen.org/),
+[spglib](https://spglib.readthedocs.io/en/stable/) and
+[PyVista](https://pyvista.org/).
 
 It was developed with the assistance of
-[Claude](https://www.anthropic.com/claude) (Anthropic), using
-[Claude Code](https://www.claude.com/product/claude-code).
+[Claude](https://claude.com/product/overview) (Anthropic), using
+[Claude Code](https://claude.com/product/claude-code).
 
 ```{toctree}
 :hidden:
@@ -119,4 +130,5 @@ plots
 shortcuts
 formats
 troubleshooting
+release-notes
 ```

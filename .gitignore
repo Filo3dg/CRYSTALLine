@@ -24,3 +24,6 @@ site/
 # Claude Code (machine-local settings)
 .claude/settings.local.json
 
+
+# Generated at build time from the GitHub releases (docs/conf.py).
+docs/release-notes.md

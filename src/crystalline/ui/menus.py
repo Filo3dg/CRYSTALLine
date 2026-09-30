@@ -128,17 +128,18 @@ def axis_icon(base: str, subscript: str, colour: str, font) -> QIcon:
     pixmap = QPixmap(int(width) * ratio, height * ratio)
     pixmap.setDevicePixelRatio(ratio)
     pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.TextAntialiasing, True)
-    painter.setPen(QColor(colour))
-    baseline = big_metrics.ascent()
-    painter.setFont(big)
-    painter.drawText(1, baseline, base)
-    if subscript:
-        painter.setFont(small)
-        painter.drawText(1 + big_metrics.horizontalAdvance(base),
-                         int(baseline + drop), subscript)
-    painter.end()
+    # ``with``, so a failure in here cannot leave Qt painting on a pixmap that
+    # is then destroyed — which does not raise, it kills the process later.
+    with QPainter(pixmap) as painter:
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        painter.setPen(QColor(colour))
+        baseline = big_metrics.ascent()
+        painter.setFont(big)
+        painter.drawText(1, baseline, base)
+        if subscript:
+            painter.setFont(small)
+            painter.drawText(1 + big_metrics.horizontalAdvance(base),
+                             int(baseline + drop), subscript)
     return QIcon(pixmap)
 
 

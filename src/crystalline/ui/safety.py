@@ -152,7 +152,8 @@ def report(context: str, exc=None) -> bool:
 
     _write(context, text, _seen[signature])
     if first:
-        _show(context, value, text)
+        # Strings, never the exception: see :func:`_show`.
+        _show(context, f"{type(value).__name__}: {value}", text)
     return first
 
 
@@ -170,12 +171,22 @@ def _write(context: str, text: str, count: int) -> None:
         pass
 
 
-def _show(context: str, value: BaseException, text: str) -> None:
+def _show(context: str, summary: str, text: str) -> None:
     """Offer the failure to the user, on the next turn of the event loop.
 
     Never immediately: this is routinely called from inside a paint or an event
     filter, and opening a dialog there re-enters Qt at the worst possible
     moment — which is the same mistake that made a dropped file segfault.
+
+    ``summary`` is the exception rendered as a string, and the exception object
+    itself is deliberately not passed here or held anywhere. Holding it holds its
+    traceback, which holds the frame that raised, which holds that frame's
+    locals — and when the frame is a ``paintEvent``, one of those locals is a
+    live ``QPainter``. Qt is then left painting on a device for as long as the
+    report lives: destroying the device prints *Cannot destroy paint device that
+    is being painted* and takes the process down at whatever unrelated moment
+    that happens to be. A guard that survives the exception and kills the
+    process a minute later is worse than no guard at all.
     """
     try:
         from PySide6.QtCore import QTimer
@@ -184,10 +195,10 @@ def _show(context: str, value: BaseException, text: str) -> None:
         return
     if QApplication.instance() is None:
         return
-    QTimer.singleShot(0, lambda: _dialog(context, value, text))
+    QTimer.singleShot(0, lambda: _dialog(context, summary, text))
 
 
-def _dialog(context: str, value: BaseException, text: str) -> None:
+def _dialog(context: str, summary: str, text: str) -> None:
     try:
         from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -196,7 +207,7 @@ def _dialog(context: str, value: BaseException, text: str) -> None:
         box.setWindowTitle("Something went wrong")
         box.setText(f"CRYSTALLine hit a problem in {context}.")
         box.setInformativeText(
-            f"{type(value).__name__}: {value}\n\n"
+            f"{summary}\n\n"
             "The window is still usable and nothing has been lost, but whatever "
             "was being done just then did not finish.\n\n"
             f"Details were written to\n{log_path()}"

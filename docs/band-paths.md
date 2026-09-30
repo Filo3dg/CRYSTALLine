@@ -14,6 +14,10 @@ The path can also be edited directly: segments are added, removed and
 reordered, and the ends of a segment are given either as a label (`X`) or as
 coordinates (`1/2 1/4 3/4`).
 
+The path follows the periodicity of the structure, not the three vectors it is
+written with: a slab is given the path of its plane lattice, and a polymer the
+only path a one-dimensional zone has, Γ to X.
+
 A third method consists in defining it on the Brillouin zone itself, with the 
 **Path builder**:
 
@@ -55,3 +59,25 @@ builder.
 The Brillouin zone of a slab is a polygon, constructed from the two periodic
 directions alone, and carries no **k**<sub>z</sub>. Its special points are those
 of the corresponding plane lattice, and every path lies in the plane.
+
+## Polymers
+
+A one-dimensional zone is a segment. It has two points — Γ at its centre and X
+at its end — and therefore exactly one path, Γ to X, which is what is proposed.
+Written over a shrinking factor of 2, the deck reads:
+
+```text
+BAND
+Band structure (G X)
+1 2 200 1 34 1 0
+0 0 0 1 0 0
+```
+
+The **Path builder** draws that segment, from −b/2 to +b/2 with Γ at its centre
+and X at each end, built from the one direction that repeats. Drawn from all
+three vectors it would be a needle a five-hundredth of an inverse ångström
+across — the width of the vacuum CRYSTAL writes around the chain, and nothing
+about the crystal.
+
+The symmetry of a polymer is a rod group, which is not named here — see
+[Symmetry](symmetry.md#the-info-panel).
