@@ -8,6 +8,7 @@ import os
 
 import pytest
 
+import sample_data as sample  # noqa: E402
 from crystalline.crystalio import plotting
 
 
@@ -104,11 +105,10 @@ def test_bad_file_raises(tmp_path):
 
 
 # Optional end-to-end: only runs where CRYSTALClear and the sample files exist.
-_F25 = glob.glob(os.path.expanduser("~/Desktop/PyCrystal/ZnO/*_bands.f25"))
-_ELA = glob.glob(os.path.expanduser("~/Desktop/PyCrystal/coesite/coesite_ela.out"))
-_FREQ = glob.glob(
-    os.path.expanduser("~/Desktop/PyCrystal/anharmonic_freq/thiourea_*freqcalc*.out")
-)
+_F25 = [p for p in [sample.path("zno/ZnO_scelphono_333_shrink_22_tight_bands.f25")] if p]
+_ELA = [p for p in [sample.path("coesite/coesite_ela.out")] if p]
+_FREQ = [p for p in
+         [sample.path("thiourea/thiourea_pbed3_Ahlrichs-pVTZ_freqcalc_80K.out")] if p]
 
 
 @pytest.mark.skipif(not _F25, reason="no sample .f25 file available")
