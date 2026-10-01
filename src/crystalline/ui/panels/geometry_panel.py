@@ -43,7 +43,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -52,7 +51,7 @@ from crystalline.core import lattice_planes as lp
 from crystalline.core import measure as measure_mod
 from crystalline.core.structure import Structure
 from crystalline.ui import preferences
-from crystalline.ui.panels.controls import Section
+from crystalline.ui.panels.controls import Section, SliderBox
 from crystalline.ui.safety import guard
 from crystalline.ui.widgets.miller import MillerIndices
 
@@ -85,8 +84,6 @@ _PLANE_COLORS = ("#e6550d", "#3182bd", "#31a354", "#756bb1", "#d6616b", "#8c6d31
 # height; asking for Qt's default 192 px each put the panel into scrolling in a
 # dock of ordinary height.
 _LIST_HINT_HEIGHT = 96
-# The opacity box, as wide as the value boxes of the Display panel.
-_OPACITY_BOX_WIDTH = 66
 # The range of a measurement line's thickness (Å): from a hairline to about four
 # times a bond at the Display panel's default radius (0.06 Å, so 0.12 Å thick).
 _THICKNESS_MIN = 0.02
@@ -241,35 +238,22 @@ class GeometryPanel(QWidget):
         box.addLayout(row)
         # The colour button follows the list selection, not just "any measurement".
         self._list.itemSelectionChanged.connect(self._sync_buttons)
-        self._list.itemSelectionChanged.connect(self._show_selected_thickness)
 
         # How thick the lines are: the default reads well on a small cell and
         # vanishes on a big supercell seen whole. Works like the planes' opacity
         # below — on the measurements selected, else on all, and on the next.
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Thickness (Å)"))
-        tip = ("How thick the lines of distances, angles and dihedrals are drawn: those "
-               "selected in the list — all of them when none is selected — and the ones "
-               "measured next")
-        self._thickness_slider = QSlider(Qt.Horizontal)
-        self._thickness_slider.setRange(int(round(_THICKNESS_MIN * 100)),
-                                        int(round(_THICKNESS_MAX * 100)))
-        self._thickness_slider.setValue(int(round(measure_mod.DEFAULT_THICKNESS * 100)))
-        self._thickness_slider.setToolTip(tip)
-        self._thickness_slider.valueChanged.connect(
-            lambda value: self._set_measurement_thickness(value / 100.0)
+        self._thickness = SliderBox(measure_mod.DEFAULT_THICKNESS, _THICKNESS_MIN,
+                                    _THICKNESS_MAX, 0.01)
+        self._thickness.setToolTip(
+            "How thick the lines of distances, angles and dihedrals are drawn: those "
+            "selected in the list — all of them when none is selected — and the ones "
+            "measured next"
         )
-        row.addWidget(self._thickness_slider, 1)
-        self._thickness_box = QDoubleSpinBox()
-        self._thickness_box.setRange(_THICKNESS_MIN, _THICKNESS_MAX)
-        self._thickness_box.setSingleStep(0.01)
-        self._thickness_box.setDecimals(2)
-        self._thickness_box.setValue(measure_mod.DEFAULT_THICKNESS)
-        self._thickness_box.setToolTip(tip)
-        self._thickness_box.setFixedWidth(_OPACITY_BOX_WIDTH)
-        self._thickness_box.valueChanged.connect(self._set_measurement_thickness)
-        row.addWidget(self._thickness_box)
-        box.addLayout(row)
+        self._thickness.changed.connect(self._set_measurement_thickness)
+        self._list.itemSelectionChanged.connect(
+            lambda: self._show_picked(self._list, self._measurements, "thickness", self._thickness)
+        )
+        box.addLayout(_labelled("Thickness (Å)", self._thickness))
         return group
 
     def _build_planes_group(self) -> QWidget:
@@ -349,7 +333,6 @@ class GeometryPanel(QWidget):
         self._plane_list.setSelectionMode(QListWidget.ExtendedSelection)
         self._plane_list.itemChanged.connect(lambda _item: self._emit_planes())
         self._plane_list.itemSelectionChanged.connect(self._sync_buttons)
-        self._plane_list.itemSelectionChanged.connect(self._show_selected_opacity)
         box.addWidget(self._plane_list, 1)
 
         row = QHBoxLayout()
@@ -371,28 +354,17 @@ class GeometryPanel(QWidget):
         # How see-through the sheets are: a plane that reads well over a sparse
         # cell can hide a dense one, or vanish against the background. Live, like
         # the Display panel's opacities; the outline stays solid at any value.
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Opacity"))
-        tip = ("Opacity of the selected plane(s) — of every plane when none is "
-               "selected — and of the planes added next. At 0 only the outline is drawn.")
-        self._plane_opacity_slider = QSlider(Qt.Horizontal)
-        self._plane_opacity_slider.setRange(0, 100)
-        self._plane_opacity_slider.setValue(int(round(lp.DEFAULT_OPACITY * 100)))
-        self._plane_opacity_slider.setToolTip(tip)
-        self._plane_opacity_slider.valueChanged.connect(
-            lambda value: self._set_plane_opacity(value / 100.0)
+        self._plane_opacity = SliderBox(lp.DEFAULT_OPACITY, 0.0, 1.0, 0.05)
+        self._plane_opacity.setToolTip(
+            "Opacity of the selected plane(s) — of every plane when none is "
+            "selected — and of the planes added next. At 0 only the outline is drawn."
         )
-        row.addWidget(self._plane_opacity_slider, 1)
-        self._plane_opacity_box = QDoubleSpinBox()
-        self._plane_opacity_box.setRange(0.0, 1.0)
-        self._plane_opacity_box.setSingleStep(0.05)
-        self._plane_opacity_box.setDecimals(2)
-        self._plane_opacity_box.setValue(lp.DEFAULT_OPACITY)
-        self._plane_opacity_box.setToolTip(tip)
-        self._plane_opacity_box.setFixedWidth(_OPACITY_BOX_WIDTH)
-        self._plane_opacity_box.valueChanged.connect(self._set_plane_opacity)
-        row.addWidget(self._plane_opacity_box)
-        box.addLayout(row)
+        self._plane_opacity.changed.connect(self._set_plane_opacity)
+        self._plane_list.itemSelectionChanged.connect(
+            lambda: self._show_picked(self._plane_list, self._planes, "opacity",
+                                      self._plane_opacity)
+        )
+        box.addLayout(_labelled("Opacity", self._plane_opacity))
         return group
 
     def _build_atoms_group(self) -> QWidget:
@@ -668,54 +640,21 @@ class GeometryPanel(QWidget):
     def _set_measurement_colour(self) -> None:
         """Recolour the selected measurement(s) — a per-item override of the
         type's default colour. Each item can carry its own colour."""
-        rows = sorted(self._list.row(i) for i in self._list.selectedItems())
-        if not rows:
-            return
-        current = self._measurements[rows[0]].color
-        seed = QColor(current) if current else QColor("#ff7f0e")
-        chosen = QColorDialog.getColor(seed, self, "Measurement colour")
-        if not chosen.isValid():
-            return
-        hex_color = chosen.name()
-        for row in rows:
-            self._measurements[row] = dataclasses.replace(
-                self._measurements[row], color=hex_color
-            )
-            self._list.item(row).setIcon(_colour_swatch(hex_color))
-        self._emit_annotations()
+        if self._pick_colour(self._list, self._measurements, "#ff7f0e", "Measurement colour"):
+            self._emit_annotations()
 
     def measurement_thickness(self) -> float:
         """The thickness shown (Å) — what the next measurement is drawn with."""
-        return float(self._thickness_box.value())
-
-    def _show_thickness(self, value: float) -> None:
-        """Put ``value`` in the slider and the box without it counting as a change."""
-        for widget, shown in ((self._thickness_slider, int(round(value * 100))),
-                              (self._thickness_box, value)):
-            blocked = widget.blockSignals(True)
-            widget.setValue(shown)
-            widget.blockSignals(blocked)
-
-    def _show_selected_thickness(self) -> None:
-        """Picking a measurement in the list shows its thickness, ready to be changed."""
-        rows = sorted(self._list.row(i) for i in self._list.selectedItems())
-        if rows:
-            self._show_thickness(self._measurements[rows[0]].thickness)
+        return self._thickness.value()
 
     def _set_measurement_thickness(self, value: float) -> None:
-        """Apply the thickness to the selected measurements, or to all without a selection."""
-        value = min(_THICKNESS_MAX, max(_THICKNESS_MIN, float(value)))
-        self._show_thickness(value)     # the other of the slider/box pair follows
-        rows = sorted(self._list.row(i) for i in self._list.selectedItems())
-        for row in rows or range(len(self._measurements)):
-            self._measurements[row] = dataclasses.replace(
-                self._measurements[row], thickness=value
-            )
+        """The thickness, on the selected measurements or all of them."""
+        self._restyle(self._list, self._measurements, thickness=float(value))
         if self._measurements:
             self._emit_annotations()
 
     def _remove_selected_measurements(self) -> None:
-        for row in sorted((self._list.row(i) for i in self._list.selectedItems()), reverse=True):
+        for row in reversed(self._selected_rows(self._list)):
             self._list.takeItem(row)
             del self._measurements[row]
         self._emit_annotations()
@@ -908,48 +847,21 @@ class GeometryPanel(QWidget):
         self._sync_buttons()
 
     def _set_plane_colour(self) -> None:
-        rows = sorted(self._plane_list.row(i) for i in self._plane_list.selectedItems())
-        if not rows:
-            return
-        seed = QColor(self._planes[rows[0]].color or _PLANE_COLORS[0])
-        chosen = QColorDialog.getColor(seed, self, "Plane colour")
-        if not chosen.isValid():
-            return
-        for row in rows:
-            self._planes[row] = dataclasses.replace(self._planes[row], color=chosen.name())
-            self._plane_list.item(row).setIcon(_colour_swatch(chosen.name()))
-        self._emit_planes()
+        if self._pick_colour(self._plane_list, self._planes, _PLANE_COLORS[0], "Plane colour"):
+            self._emit_planes()
 
     def plane_opacity(self) -> float:
         """The opacity shown — what the next plane is drawn with."""
-        return float(self._plane_opacity_box.value())
-
-    def _show_opacity(self, value: float) -> None:
-        """Put ``value`` in the slider and the box without it counting as a change."""
-        for widget, shown in ((self._plane_opacity_slider, int(round(value * 100))),
-                              (self._plane_opacity_box, value)):
-            blocked = widget.blockSignals(True)
-            widget.setValue(shown)
-            widget.blockSignals(blocked)
-
-    def _show_selected_opacity(self) -> None:
-        """Picking a plane in the list shows its opacity, ready to be changed."""
-        rows = sorted(self._plane_list.row(i) for i in self._plane_list.selectedItems())
-        if rows:
-            self._show_opacity(self._planes[rows[0]].opacity)
+        return self._plane_opacity.value()
 
     def _set_plane_opacity(self, value: float) -> None:
-        """Apply the opacity to the selected planes, or to all of them without a selection."""
-        value = min(1.0, max(0.0, float(value)))
-        self._show_opacity(value)     # the other of the slider/box pair follows
-        rows = sorted(self._plane_list.row(i) for i in self._plane_list.selectedItems())
-        for row in rows or range(len(self._planes)):
-            self._planes[row] = dataclasses.replace(self._planes[row], opacity=value)
+        """The opacity, on the selected planes or all of them."""
+        self._restyle(self._plane_list, self._planes, opacity=float(value))
         if self._planes:
             self._emit_planes()
 
     def _select_plane_atoms(self) -> None:
-        rows = sorted(self._plane_list.row(i) for i in self._plane_list.selectedItems())
+        rows = self._selected_rows(self._plane_list)
         on = set()
         for row in rows:
             on.update(int(i) for i in self._atoms_on(self._planes[row]))
@@ -957,13 +869,47 @@ class GeometryPanel(QWidget):
             self.select_atoms_requested.emit(sorted(on))
 
     def _remove_selected_planes(self) -> None:
-        rows = sorted((self._plane_list.row(i) for i in self._plane_list.selectedItems()),
-                      reverse=True)
-        for row in rows:
+        for row in reversed(self._selected_rows(self._plane_list)):
             self._plane_list.takeItem(row)
             del self._planes[row]
         self._emit_planes()
         self._sync_buttons()
+
+    # ── the two lists: measurements and planes ──────────────────────────
+    # Both hold frozen dataclasses with a colour and one drawn quantity (a
+    # line's thickness, a sheet's opacity), restyled the same way: on the rows
+    # picked in the list, or on every row when none is.
+    @staticmethod
+    def _selected_rows(listing: QListWidget) -> List[int]:
+        """The rows picked in ``listing``, top to bottom."""
+        return sorted(listing.row(item) for item in listing.selectedItems())
+
+    def _restyle(self, listing: QListWidget, entries: list, **change) -> None:
+        """Give the entries picked in ``listing`` — every one when none is — ``change``."""
+        for row in self._selected_rows(listing) or range(len(entries)):
+            entries[row] = dataclasses.replace(entries[row], **change)
+
+    def _show_picked(self, listing: QListWidget, entries: list, field: str,
+                     control: SliderBox) -> None:
+        """Picking a row shows its ``field`` in ``control``, ready to be changed."""
+        rows = self._selected_rows(listing)
+        if rows:
+            control.set_value(getattr(entries[rows[0]], field), notify=False)
+
+    def _pick_colour(self, listing: QListWidget, entries: list, default: str,
+                     title: str) -> Optional[str]:
+        """Ask for a colour for the rows picked in ``listing``; ``None`` if none is
+        picked or the dialog is cancelled. The rows get it, and its swatch."""
+        rows = self._selected_rows(listing)
+        if not rows:
+            return None
+        chosen = QColorDialog.getColor(QColor(entries[rows[0]].color or default), self, title)
+        if not chosen.isValid():
+            return None
+        self._restyle(listing, entries, color=chosen.name())
+        for row in rows:
+            listing.item(row).setIcon(_colour_swatch(chosen.name()))
+        return chosen.name()
 
     def _plane_items(self) -> List[QListWidgetItem]:
         return [self._plane_list.item(row) for row in range(self._plane_list.count())]
@@ -998,9 +944,7 @@ class GeometryPanel(QWidget):
         self._plane_remove_btn.setEnabled(picked)
         # Opacity is for planes there are, or will be: none in a molecule until
         # one is fitted.
-        has_planes = self._miller_cell is not None or bool(self._planes)
-        self._plane_opacity_slider.setEnabled(has_planes)
-        self._plane_opacity_box.setEnabled(has_planes)
+        self._plane_opacity.setEnabled(self._miller_cell is not None or bool(self._planes))
 
         self._add_btn.setEnabled(self._editing)
         on_selection = self._editing and count >= 1
@@ -1013,6 +957,14 @@ class GeometryPanel(QWidget):
         one_atom = self._editing and count == 1
         for spin in self._coord_boxes:
             spin.setEnabled(one_atom)
+
+
+def _labelled(text: str, control: QWidget) -> QHBoxLayout:
+    """``text`` then ``control``, which takes the rest of the row."""
+    row = QHBoxLayout()
+    row.addWidget(QLabel(text))
+    row.addWidget(control, 1)
+    return row
 
 
 class _CompactList(QListWidget):

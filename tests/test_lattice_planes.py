@@ -45,6 +45,28 @@ def test_cubic_spacing_is_a_over_the_root_of_h2_k2_l2(miller):
     assert lp.spacing(a * np.eye(3), miller) == pytest.approx(a / np.sqrt(np.dot(miller, miller)))
 
 
+@pytest.mark.parametrize("miller", [(1, 0, 0), (0, 1, 0), (1, 1, 0), (1, 0, 1), (2, -1, 3)])
+def test_orthorhombic_and_tetragonal_spacing_match_the_textbook_formula(miller):
+    h, k, l = miller
+    a, b, c = 4.0, 5.0, 6.0                                      # orthorhombic
+    expected = 1.0 / np.sqrt(h * h / a**2 + k * k / b**2 + l * l / c**2)
+    assert lp.spacing(_cell(a, b, c, 90, 90, 90), miller) == pytest.approx(expected)
+    a, c = 4.0, 6.0                                              # tetragonal
+    expected = 1.0 / np.sqrt((h * h + k * k) / a**2 + l * l / c**2)
+    assert lp.spacing(_cell(a, a, c, 90, 90, 90), miller) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("miller", [(1, 0, 0), (1, 1, 0), (1, 1, 1), (1, -1, 0), (2, 1, -1)])
+def test_rhombohedral_spacing_matches_the_textbook_formula(miller):
+    a, alpha = 4.75, np.radians(57.2)
+    h, k, l = miller
+    cos, sin = np.cos(alpha), np.sin(alpha)
+    inverse = (((h * h + k * k + l * l) * sin * sin + 2 * (h * k + k * l + h * l) * (cos * cos - cos))
+               / (a * a * (1 - 3 * cos * cos + 2 * cos**3)))
+    cell = _cell(a, a, a, 57.2, 57.2, 57.2)
+    assert lp.spacing(cell, miller) == pytest.approx(1 / np.sqrt(inverse))
+
+
 @pytest.mark.parametrize("miller", [(1, 0, 0), (1, 1, 0), (0, 0, 1), (1, 0, 1), (2, -1, 3)])
 def test_hexagonal_spacing_matches_the_textbook_formula(miller):
     a, c = 3.21, 5.21
@@ -212,12 +234,28 @@ def test_atoms_on_a_fitted_plane_need_no_cell():
     assert list(lp.atoms_on(None, plane, positions)) == [0, 1]
 
 
-def test_the_nearest_hkl_of_a_fit_is_its_own_when_it_is_a_lattice_plane():
-    cell = _cell(5.0, 6.0, 7.0, 90, 105, 90)                     # monoclinic: normals are not hkl
-    for miller in [(1, 0, 0), (0, 1, 0), (1, 1, 1), (2, -1, 3)]:
+@pytest.mark.parametrize("cell", [
+    _cell(5.43, 5.43, 5.43, 90, 90, 90),     # cubic
+    _cell(4.0, 4.0, 6.0, 90, 90, 90),        # tetragonal
+    _cell(4.0, 5.0, 6.0, 90, 90, 90),        # orthorhombic
+    _cell(5.0, 6.0, 7.0, 90, 105, 90),       # monoclinic
+    _cell(5.1, 6.3, 7.2, 81, 97, 103),       # triclinic
+    _cell(4.55, 4.55, 11.86, 90, 90, 120),   # trigonal / hexagonal axes
+    _cell(4.75, 4.75, 4.75, 57.2, 57.2, 57.2),  # trigonal, rhombohedral axes
+    _cell(3.99, 3.99, 3.99, 60, 60, 60),     # primitive cell of an fcc crystal
+], ids=["cubic", "tetragonal", "orthorhombic", "monoclinic", "triclinic",
+        "hexagonal-axes", "rhombohedral-axes", "fcc-primitive"])
+def test_the_nearest_hkl_of_a_fit_is_its_own_when_it_is_a_lattice_plane(cell):
+    """A plane's normal is along [hkl] only when the axes are orthogonal *and*
+    equally long: (1 1 0) of an orthorhombic or tetragonal-c cell, or any plane
+    of an oblique one, is where finding (hkl) from a normal can go wrong."""
+    for miller in [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, -1, 0), (1, 1, 1),
+                   (2, -1, 3), (1, 0, -2)]:
         point, normal, _d = lp.plane_frame(cell, miller, 0.5)
-        assert lp.nearest_miller(cell, normal)[0] == miller
-        assert lp.nearest_miller(cell, -normal)[1] == pytest.approx(0.0, abs=1e-6)
+        found, angle = lp.nearest_miller(cell, normal)
+        assert found in (miller, tuple(-v for v in miller))     # (hkl) and (h̄k̄l̄) are one plane
+        assert angle == pytest.approx(0.0, abs=1e-6)
+        assert lp.nearest_miller(cell, -normal)[0] == found
 
 
 def test_the_nearest_hkl_of_a_tilted_fit_says_how_far_off_it_is():

@@ -33,6 +33,7 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from crystalline.core import lattice_planes
 from crystalline.core.structure import Structure
 
 # What an element looks like on screen — the same three shapes a measurement has.
@@ -694,12 +695,14 @@ def _sort_key(element: SymmetryElement) -> tuple:
 
 # ── describing which way an element points ────────────────────────────────
 def _site_text(element: SymmetryElement, cell) -> str:
-    """``"∥ [001]"`` — which way the element faces.
+    """``"∥ [001]"`` / ``"∥ (110)"`` — which way the element faces.
 
     Lattice indices for a periodic structure (what a crystallographer reads a
-    direction as), plain cartesian components for a molecule, which has no cell
-    for an index to refer to. Where the element *is* needs no saying: they all
-    pass through the one centre.
+    direction as): an axis by the direction [uvw] it runs along, a mirror by the
+    lattice plane (hkl) it lies in. Plain cartesian components for a molecule,
+    which has no cell for an index to refer to — there a mirror is named by its
+    normal. Where the element *is* needs no saying: they all pass through the
+    one centre.
     """
     if element.kind == POINT:
         return ""
@@ -707,10 +710,33 @@ def _site_text(element: SymmetryElement, cell) -> str:
         # ``+ 0.0`` so a component that came out as -0.0 does not read as "-0.00".
         vector = "[" + ", ".join(f"{v:.2f}" for v in np.round(element.direction, 2) + 0.0) + "]"
         return ("∥ " if element.kind == AXIS else "⊥ ") + vector
-    indices = _integer_indices(element.direction @ np.linalg.inv(np.asarray(cell, dtype=float)))
-    # A plane is named by the lattice direction of its normal, in round brackets —
-    # the (hkl) of the crystallographic plane it is parallel to.
-    return f"⊥ ({indices})" if element.kind == PLANE else f"∥ [{indices}]"
+    cell = np.asarray(cell, dtype=float)
+    if element.kind == PLANE:
+        return f"∥ ({_plane_indices(element.direction, cell)})"
+    return f"∥ [{_integer_indices(element.direction @ np.linalg.inv(cell))}]"
+
+
+# A mirror's normal is taken to be that of an (hkl) when within this angle of it
+# (degrees); beyond, the plane is not a lattice plane and is written in decimals.
+_PLANE_ANGLE_TOLERANCE = 0.1
+
+
+def _plane_indices(normal, cell) -> str:
+    """``"110"`` / ``"21̄1̄0"``: the lattice plane (hkl) a mirror with ``normal`` lies in.
+
+    Not the lattice direction of the normal: the normal of (hkl) is
+    ``h a* + k b* + l c*``, which is the direction [hkl] only on orthogonal
+    axes — the mirror normal to **a** in a hexagonal cell is (21̄1̄0), not (100).
+    Found by the same code as the Geometry panel's lattice planes, and written,
+    as they are, with four indices on hexagonal axes.
+    """
+    miller, angle = lattice_planes.nearest_miller(cell, normal, max_index=12)
+    if angle > _PLANE_ANGLE_TOLERANCE:
+        hkl = cell @ np.asarray(normal, dtype=float)     # (a·n, b·n, c·n) ∝ (h, k, l)
+        return " ".join(f"{v:.2f}" for v in hkl / np.abs(hkl).max())
+    if lattice_planes.is_hexagonal(cell):
+        miller = lattice_planes.four_index(miller)
+    return _indices_text(miller)
 
 
 def _integer_indices(direction: np.ndarray, limit: int = 12) -> str:
@@ -730,11 +756,15 @@ def _integer_indices(direction: np.ndarray, limit: int = 12) -> str:
         if np.all(np.abs(candidate - np.round(candidate)) < 1e-3):
             values = np.round(candidate).astype(int)
             divisor = np.gcd.reduce(np.abs(values[values != 0]))
-            values = values // max(int(divisor), 1)
-            if np.all(np.abs(values) < 10):
-                return "".join(_index_text(v) for v in values)
-            return " ".join(_index_text(v) for v in values)
+            return _indices_text(values // max(int(divisor), 1))
     return " ".join(f"{v:.2f}" for v in direction)
+
+
+def _indices_text(values) -> str:
+    """``"1 1̄ 0"`` written ``"11̄0"``: run together when every index is one digit."""
+    if all(abs(int(v)) < 10 for v in values):
+        return "".join(_index_text(v) for v in values)
+    return " ".join(_index_text(v) for v in values)
 
 
 def _index_text(value: int) -> str:

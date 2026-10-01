@@ -63,6 +63,14 @@ across it. A group with no single
 principal axis — the orthorhombic ones, whose three two-fold axes are
 equivalent — keeps the plain σ.
 
+In a crystal each element is listed with its orientation in lattice terms: an
+axis by the direction it runs along, as in C<sub>4</sub> ∥ [001], and a mirror by
+the lattice plane it lies in, as in σ ∥ (110). The two are not interchangeable
+when the axes are not orthogonal: in a hexagonal crystal the mirror whose normal
+is **a** is the plane (2 1̄ 1̄ 0), written with four indices as lattice planes
+are, and not (1 0 0). In a molecule, which has no lattice, an axis is given by
+its Cartesian direction and a mirror by its Cartesian normal.
+
 The group itself is reported in the convention of its own kind: a space group or
 a layer group in the Hermann–Mauguin notation, a molecular point group in the
 Schoenflies one.

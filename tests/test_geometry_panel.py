@@ -222,25 +222,25 @@ def test_the_thickness_slider_sets_every_line_or_the_selected_ones(qapp):
     assert [m.thickness for m in panel.measurements()] == pytest.approx([0.07, 0.07])
 
     # nothing selected in the list: every line follows, live
-    panel._thickness_slider.setValue(20)
+    panel._thickness.slider.setValue(375)          # 0.20 Å: 0.02 + 0.375 × 0.48
     assert [m.thickness for m in panel.measurements()] == pytest.approx([0.2, 0.2])
     assert [m.thickness for m in emitted[-1]] == pytest.approx([0.2, 0.2])
-    assert panel._thickness_box.value() == pytest.approx(0.2)      # the box follows
+    assert panel._thickness.box.value() == pytest.approx(0.2)      # the box follows
 
     # one selected: only that one, and picking another shows its value
     panel._list.item(1).setSelected(True)
-    panel._thickness_box.setValue(0.35)
+    panel._thickness.box.setValue(0.35)
     assert [m.thickness for m in panel.measurements()] == pytest.approx([0.2, 0.35])
-    assert panel._thickness_slider.value() == 35
+    assert panel._thickness.slider.value() == round((0.35 - 0.02) / 0.48 * 1000)
     panel._list.clearSelection()
     panel._list.item(0).setSelected(True)
-    assert panel._thickness_box.value() == pytest.approx(0.2)
+    assert panel._thickness.box.value() == pytest.approx(0.2)
     assert [m.thickness for m in panel.measurements()] == pytest.approx([0.2, 0.35])
 
 
 def test_new_measurements_take_the_thickness_shown(qapp):
     panel = GeometryPanel(_water())
-    panel._thickness_box.setValue(0.3)       # nothing measured yet: sets the next one's
+    panel._thickness.box.setValue(0.3)       # nothing measured yet: sets the next one's
     panel.set_selection([0, 1])
     panel._measure_selection()
     assert panel.measurements()[0].thickness == pytest.approx(0.3)
@@ -604,7 +604,7 @@ def test_a_plane_fitted_to_atoms_is_kept_as_fitted_and_named_by_its_nearest_hkl(
 
 def test_a_fitted_plane_selects_the_atoms_on_it_and_takes_the_opacity(qapp):
     panel, structure, drawn = _plane_panel()
-    panel._plane_opacity_slider.setValue(60)
+    panel._plane_opacity.slider.setValue(600)
     panel.set_selection([0, 1, 2])
     panel._fit_plane_btn.click()
     assert panel.lattice_planes()[0].opacity == pytest.approx(0.6)
@@ -631,33 +631,33 @@ def test_the_opacity_slider_sets_every_plane_or_the_selected_ones(qapp):
     panel._add_plane_btn.click()
 
     # nothing selected in the list: every plane follows the slider, live
-    panel._plane_opacity_slider.setValue(70)
+    panel._plane_opacity.slider.setValue(700)
     assert [p.opacity for p in panel.lattice_planes()] == pytest.approx([0.7, 0.7])
     assert [p.opacity for p in drawn[-1][0]] == pytest.approx([0.7, 0.7])
-    assert panel._plane_opacity_box.value() == pytest.approx(0.7)   # the box follows
+    assert panel._plane_opacity.box.value() == pytest.approx(0.7)   # the box follows
 
     # one selected: only that one
     panel._plane_list.item(1).setSelected(True)
-    panel._plane_opacity_box.setValue(0.15)
+    panel._plane_opacity.box.setValue(0.15)
     assert [p.opacity for p in panel.lattice_planes()] == pytest.approx([0.7, 0.15])
-    assert panel._plane_opacity_slider.value() == 15
+    assert panel._plane_opacity.slider.value() == 150
 
 
 def test_picking_a_plane_shows_its_opacity_and_new_planes_take_the_slider(qapp):
     panel, _structure, drawn = _plane_panel()
-    panel._plane_opacity_slider.setValue(90)
+    panel._plane_opacity.slider.setValue(900)
     panel._add_plane_btn.click()
     assert panel.lattice_planes()[0].opacity == pytest.approx(0.9)   # added at the value shown
-    panel._plane_opacity_slider.setValue(20)
+    panel._plane_opacity.slider.setValue(200)
     panel._add_plane_btn.click()
     assert [p.opacity for p in panel.lattice_planes()] == pytest.approx([0.2, 0.2])
 
     panel._plane_list.item(0).setSelected(True)
-    panel._plane_opacity_box.setValue(0.55)
+    panel._plane_opacity.box.setValue(0.55)
     count = len(drawn)
     panel._plane_list.clearSelection()
     panel._plane_list.item(1).setSelected(True)          # shows 0.2, changes nothing
-    assert panel._plane_opacity_slider.value() == 20
+    assert panel._plane_opacity.slider.value() == 200
     assert len(drawn) == count
     assert [p.opacity for p in panel.lattice_planes()] == pytest.approx([0.55, 0.2])
 
@@ -665,11 +665,10 @@ def test_picking_a_plane_shows_its_opacity_and_new_planes_take_the_slider(qapp):
 def test_the_opacity_row_waits_for_a_lattice_or_a_fit(qapp):
     panel = GeometryPanel(_water())
     panel.set_miller_cell(None)
-    assert not panel._plane_opacity_slider.isEnabled()
-    assert not panel._plane_opacity_box.isEnabled()
+    assert not panel._plane_opacity.isEnabled()
     panel.set_selection([0, 1, 2])
     panel._fit_plane_btn.click()
-    assert panel._plane_opacity_slider.isEnabled() and panel._plane_opacity_box.isEnabled()
+    assert panel._plane_opacity.isEnabled()
 
 
 # ── sections ──────────────────────────────────────────────────────────────

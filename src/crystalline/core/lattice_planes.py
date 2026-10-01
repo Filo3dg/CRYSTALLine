@@ -119,7 +119,7 @@ class FittedPlane:
         object.__setattr__(self, "opacity", min(1.0, max(0.0, float(self.opacity))))
 
     def drawn_the_same(self, other) -> bool:
-        """Whether ``other`` is this fit in the same place — see :meth:`LatticePlane.drawn_the_same`."""
+        """Whether ``other`` is this fit in the same place — as for a lattice plane."""
         return isinstance(other, FittedPlane) and (
             (self.point, self.normal, self.points) == (other.point, other.normal, other.points))
 
