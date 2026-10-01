@@ -194,7 +194,7 @@ def test_the_note_names_the_setting_written():
     assert geometry_note(structure, GeometryOptions(cell_setting=COMPUTED)) == \
         "Cell as computed: P2₁/n (No. 14)."
     assert geometry_note(structure, GeometryOptions(cell_setting=STANDARD)) == \
-        "Standard cell (pymatgen): P2₁/c (No. 14)."
+        "Standard setting: P2₁/c (No. 14)."
     assert "P1" in geometry_note(structure, GeometryOptions(use_symmetry=False))
 
 

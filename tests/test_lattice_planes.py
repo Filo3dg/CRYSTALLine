@@ -183,3 +183,57 @@ def test_a_plane_carries_its_opacity_kept_between_0_and_1():
     assert plane.drawn_the_same(LatticePlane((1, 1, 0), 0.5, family=True, color="#000000", opacity=0.9))
     assert not plane.drawn_the_same(LatticePlane((1, 1, 0), 0.25, family=True))
     assert not plane.drawn_the_same(LatticePlane((1, 1, 0), 0.5))
+
+
+# ── planes fitted to atoms ────────────────────────────────────────────────
+def test_a_fit_is_exact_for_coplanar_atoms():
+    square = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float)
+    plane = lp.fit_plane(square)
+    assert plane.point == pytest.approx((0.5, 0.5, 0.0))
+    assert plane.normal == pytest.approx((0.0, 0.0, 1.0))    # sign fixed: largest component positive
+    assert plane.rms == pytest.approx(0.0, abs=1e-12)
+    assert len(plane.points) == 4 and not plane.family
+
+
+def test_a_fit_reports_how_far_from_planar_the_atoms_are():
+    puckered = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0.5, 0.5, 0.4]], dtype=float)
+    assert lp.fit_plane(puckered).rms > 0.1
+
+
+def test_a_fit_needs_three_atoms():
+    with pytest.raises(ValueError):
+        lp.fit_plane(np.eye(2, 3))
+
+
+def test_atoms_on_a_fitted_plane_need_no_cell():
+    plane = lp.fit_plane([[0, 0, 1], [1, 0, 1], [0, 1, 1]])
+    positions = np.array([[5, 5, 1.0], [0, 0, 1.1], [0, 0, 2.0]])
+    assert lp.distances_to(None, plane, positions) == pytest.approx([0.0, 0.1, 1.0])
+    assert list(lp.atoms_on(None, plane, positions)) == [0, 1]
+
+
+def test_the_nearest_hkl_of_a_fit_is_its_own_when_it_is_a_lattice_plane():
+    cell = _cell(5.0, 6.0, 7.0, 90, 105, 90)                     # monoclinic: normals are not hkl
+    for miller in [(1, 0, 0), (0, 1, 0), (1, 1, 1), (2, -1, 3)]:
+        point, normal, _d = lp.plane_frame(cell, miller, 0.5)
+        assert lp.nearest_miller(cell, normal)[0] == miller
+        assert lp.nearest_miller(cell, -normal)[1] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_the_nearest_hkl_of_a_tilted_fit_says_how_far_off_it_is():
+    cubic = np.eye(3) * 4.0
+    tilt = np.radians(3.0)
+    miller, angle = lp.nearest_miller(cubic, [np.sin(tilt), 0.0, np.cos(tilt)])
+    assert miller == (0, 0, 1) and angle == pytest.approx(3.0, abs=1e-6)
+    # among equally good planes, the one with the smaller indices
+    assert lp.nearest_miller(cubic, [1, 1, 0])[0] == (1, 1, 0)
+
+
+def test_a_fit_restyled_is_drawn_the_same_and_never_as_an_indexed_plane():
+    import dataclasses
+
+    plane = lp.fit_plane([[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    assert plane.drawn_the_same(dataclasses.replace(plane, color="#000000", opacity=0.9))
+    assert not plane.drawn_the_same(lp.fit_plane([[0, 0, 1], [1, 0, 1], [0, 1, 1]]))
+    assert not plane.drawn_the_same(LatticePlane((0, 0, 1)))
+    assert not LatticePlane((0, 0, 1)).drawn_the_same(plane)

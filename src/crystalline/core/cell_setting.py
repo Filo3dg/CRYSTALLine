@@ -49,7 +49,7 @@ COMPUTED = "computed"
 STANDARD = "standard"
 CELL_CHOICES: Tuple[Tuple[str, str], ...] = (
     (COMPUTED, "As computed"),
-    (STANDARD, "Standard (pymatgen)"),
+    (STANDARD, "Standard setting"),
 )
 DEFAULT_CHOICE = COMPUTED
 
@@ -57,7 +57,7 @@ _SUBSCRIPTS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
 
 
 def choice_label(choice: str) -> str:
-    """``"As computed"`` / ``"Standard (pymatgen)"`` for a stored choice."""
+    """``"As computed"`` / ``"Standard setting"`` for a stored choice."""
     return dict(CELL_CHOICES).get(choice, choice)
 
 

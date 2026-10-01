@@ -101,7 +101,6 @@ class DisplayPanel(QWidget):
         self._bg_color = settings.background_color
         self._measure_point_color = settings.measure_point_color
         self._measure_line_color = settings.measure_line_color
-        self._measure_plane_color = settings.measure_plane_color
         self._symmetry_axis_color = settings.symmetry_axis_color
         self._symmetry_plane_color = settings.symmetry_plane_color
         self._symmetry_point_color = settings.symmetry_point_color
@@ -242,7 +241,6 @@ class DisplayPanel(QWidget):
         overlays.add_wide(_subheading("Measurements"))
         self._color_row(overlays, "Dots", "_measure_point_color")
         self._color_row(overlays, "Lines", "_measure_line_color")
-        self._color_row(overlays, "Planes", "_measure_plane_color")
         overlays.add_wide(_subheading("Point symmetry"))
         self._color_row(overlays, "Rotation axes", "_symmetry_axis_color")
         self._color_row(overlays, "Mirror planes", "_symmetry_plane_color")
@@ -568,7 +566,6 @@ class DisplayPanel(QWidget):
                                 ("_mode_arrow_color", settings.mode_arrow_color),
                                 ("_measure_point_color", settings.measure_point_color),
                                 ("_measure_line_color", settings.measure_line_color),
-                                ("_measure_plane_color", settings.measure_plane_color),
                                 ("_symmetry_axis_color", settings.symmetry_axis_color),
                                 ("_symmetry_plane_color", settings.symmetry_plane_color),
                                 ("_symmetry_point_color", settings.symmetry_point_color)):
@@ -680,7 +677,6 @@ class DisplayPanel(QWidget):
                 mode_arrow_color=self._mode_arrow_color,
                 measure_point_color=self._measure_point_color,
                 measure_line_color=self._measure_line_color,
-                measure_plane_color=self._measure_plane_color,
                 symmetry_axis_color=self._symmetry_axis_color,
                 symmetry_plane_color=self._symmetry_plane_color,
                 symmetry_point_color=self._symmetry_point_color,

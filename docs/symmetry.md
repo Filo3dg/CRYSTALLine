@@ -38,7 +38,7 @@ The **Cell** box at the top of the Info panel chooses between the two:
 | Cell | What the panel reports |
 | --- | --- |
 | **As computed** | the cell drawn in the 3D view, with the space group named in that cell's own setting (P2₁/n) |
-| **Standard (pymatgen)** | pymatgen's conventional standard cell, with the group's standard symbol (P2₁/c) |
+| **Standard setting** | the conventional standard cell, with the group's standard symbol (P2₁/c) |
 
 The choice is remembered between sessions, and the
 [CRYSTAL input builder](inputs.md#the-geometry-block) starts on it. If the cell

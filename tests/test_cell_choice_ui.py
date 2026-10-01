@@ -82,7 +82,7 @@ def test_the_builder_starts_on_the_cell_it_is_given_and_writes_it(qapp):
     dialog._cell.setCurrentIndex(dialog._cell.findData(STANDARD))
     lines = dialog._preview.toPlainText().splitlines()
     assert lines[2:4] == ["0 0 0", "14"]
-    assert dialog._cell_note.text() == "Standard cell (pymatgen): P2₁/c (No. 14)."
+    assert dialog._cell_note.text() == "Standard setting: P2₁/c (No. 14)."
 
     standard = InputBuilderDialog(_p21n(), cell_choice=STANDARD)
     assert standard._preview.toPlainText().splitlines()[3] == "14"

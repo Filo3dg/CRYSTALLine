@@ -894,7 +894,7 @@ def _crystal_geometry(structure: Structure, opts: GeometryOptions) -> Tuple[List
                                                           representatives=True)
     if written is not None:
         body, setting = written
-        return body, fallback + (f"Standard cell (pymatgen): {setting.label} "
+        return body, fallback + (f"Standard setting: {setting.label} "
                                  f"(No. {setting.number}).")
     return _p1_crystal_body(pmg), fallback + ("The symmetry could not be written in a "
                                               "setting CRYSTAL can name: every atom is "

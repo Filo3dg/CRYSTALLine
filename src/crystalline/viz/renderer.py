@@ -49,14 +49,11 @@ _HBOND_DASH = 0.28   # Å: dash length
 _HBOND_GAP = 0.20    # Å: gap between dashes
 
 # Measurement annotations (Geometry panel). Colours are per-view settings now
-# (measure_point/line/plane_color); this warm accent is only the fallback default.
+# (measure_point/line_color); this warm accent is only the fallback default.
 _ANNOTATION_COLOR = "#ff7f0e"
 _ANNOTATION_LINE_RADIUS = 0.035
 _ANNOTATION_POINT_RADIUS = 0.18
 _ANNOTATION_FONT_SIZE = 13
-_ANNOTATION_PLANE_OPACITY = 0.28
-_ANNOTATION_PLANE_MARGIN = 1.25   # patch overhang beyond the fitted atoms
-_ANNOTATION_PLANE_MIN_SIZE = 2.0  # Angstrom, so a tight plane is still visible
 # Depth bias that lifts annotations in front of the atoms they measure.
 _ANNOTATION_DEPTH_OFFSET = -66000.0
 
@@ -87,6 +84,11 @@ _LATTICE_PLANE_SLAB_MARGIN = 1.0
 # area than this (Å²) only grazes an edge or a corner, and is not drawn.
 _LATTICE_PLANE_FACE_MARGIN = 1e-6
 _LATTICE_PLANE_MIN_AREA = 1e-6
+# A plane fitted to the atoms of a molecule has no cell to be drawn across, so it
+# is a square patch over the atoms: this much wider than they spread, and never
+# smaller than this (Å), so three close atoms still show a plane.
+_FITTED_PATCH_MARGIN = 1.25
+_FITTED_PATCH_MIN_SIZE = 2.0
 
 # Coordination-polyhedra outline: only edges where adjacent faces bend by more
 # than this are real polyhedron edges (the rest are the hull's triangulation of
@@ -1034,15 +1036,15 @@ class StructureRenderer:
             edges.points, self._positions, self._cell_or_none()
         )
 
-    # ── measurement annotations (points / lines / planes) ───────────────
+    # ── measurement annotations (points / lines) ────────────────────────
     def set_annotations(self, annotations) -> None:
         """Draw geometry measurements over the structure, replacing any shown.
 
         ``annotations`` are :class:`~crystalline.core.measure.Measurement`
-        objects: a point becomes a marker, a distance/angle/dihedral becomes the
-        polyline through its atoms, and a plane becomes a translucent patch.
-        They are kept and redrawn on every rebuild, so they survive
-        an edit or a settings change rather than blinking out.
+        objects: a point becomes a marker, and a distance/angle/dihedral becomes
+        the polyline through its atoms. They are kept and redrawn on every
+        rebuild, so they survive an edit or a settings change rather than
+        blinking out.
         """
         self._annotations = list(annotations)
         self._clear_annotations()
@@ -1056,7 +1058,7 @@ class StructureRenderer:
 
     def _draw_annotations(self) -> None:
         """(Re)draw the stored measurements. Never raises into a redraw."""
-        from crystalline.core.measure import DIHEDRAL, PLANE, POINT
+        from crystalline.core.measure import DIHEDRAL, POINT
 
         self._annotation_actors = []
         if not self._annotations:
@@ -1075,8 +1077,6 @@ class StructureRenderer:
                         pv.Sphere(radius=_ANNOTATION_POINT_RADIUS, center=points[0]),
                         color=item.color or self._settings.measure_point_color,
                     )
-                elif item.kind == PLANE:
-                    self._draw_annotation_plane(item, points)
                 else:  # distance / angle / dihedral: the path through the atoms
                     self._add_annotation_actor(
                         _polyline_tube(points),
@@ -1084,8 +1084,8 @@ class StructureRenderer:
                     )
             except Exception:  # noqa: BLE001 - a bad measurement must not kill the redraw
                 continue
-            if item.kind in (POINT, PLANE):
-                labels.append("")  # points and planes carry no floating label
+            if item.kind == POINT:
+                labels.append("")  # a point carries no floating label
             else:
                 labels.append(f"{item.value:.3f} {item.unit}".strip())
             label_points.append(_annotation_anchor(item.kind, points, DIHEDRAL))
@@ -1101,20 +1101,6 @@ class StructureRenderer:
             )
             actor.SetPickable(False)
             self._annotation_actors.append(actor)
-
-    def _draw_annotation_plane(self, item, points: np.ndarray) -> None:
-        """A translucent patch spanning the fitted atoms."""
-        origin = np.asarray(item.origin, dtype=float)
-        normal = np.asarray(item.normal, dtype=float)
-        # Size the patch to the atoms it was fitted through, with a little margin.
-        spread = float(np.linalg.norm(points - origin, axis=1).max())
-        size = max(spread * 2.0 * _ANNOTATION_PLANE_MARGIN, _ANNOTATION_PLANE_MIN_SIZE)
-        patch = pv.Plane(center=origin, direction=normal, i_size=size, j_size=size)
-        self._add_annotation_actor(
-            patch, color=item.color or self._settings.measure_plane_color,
-            opacity=_ANNOTATION_PLANE_OPACITY,
-            on_top=False,  # a plane reads as a slice *through* the structure
-        )
 
     def _add_annotation_actor(
         self, mesh, color: str = None, opacity: float = 1.0, on_top: bool = True
@@ -1246,8 +1232,10 @@ class StructureRenderer:
         objects, their indices quoted in ``miller_cell`` — the conventional cell
         — or, without one, in the cell on screen. Each is drawn as the polygon it
         cuts out of the drawn cell (the supercell, if one is shown), and a family
-        as every plane of it crossing that cell. Kept and redrawn on every
-        rebuild, like the measurements.
+        as every plane of it crossing that cell. A
+        :class:`~crystalline.core.lattice_planes.FittedPlane` among them is drawn
+        the same way, where it was fitted. Kept and redrawn on every rebuild,
+        like the measurements.
 
         A change of colour or opacity alone restyles the sheets already drawn
         rather than building them again, so dragging the opacity slider over
@@ -1325,12 +1313,20 @@ class StructureRenderer:
             return
         region = self.lattice_region()
         reference = self._miller_reference(self._lattice_plane_cell)
-        if region is None or reference is None:
-            return
-        origin, vectors = region
-        corners = lp.region_corners(origin, vectors)
         for index, plane in enumerate(self._lattice_planes):
             try:
+                if isinstance(plane, lp.FittedPlane):
+                    # Across the drawn cell, like an (hkl) plane; over its own
+                    # atoms where there is no cell — a molecule.
+                    sheet = (_plane_sheet(plane.point, plane.normal, *region)
+                             if region is not None else _fitted_patch(plane))
+                    if sheet is not None:
+                        self._add_lattice_plane(sheet, index, plane)
+                    continue
+                if region is None or reference is None:
+                    continue
+                origin, vectors = region
+                corners = lp.region_corners(origin, vectors)
                 offsets = (lp.offsets_across(reference, plane.miller, plane.offset, corners)
                            if plane.family else [plane.offset])
                 for offset in offsets:
@@ -2763,6 +2759,15 @@ def _plane_sheet(point, normal, origin, vectors):
     if sheet.n_cells == 0 or float(sheet.area) < _LATTICE_PLANE_MIN_AREA:
         return None
     return sheet
+
+
+def _fitted_patch(plane):
+    """A square of the fitted ``plane`` over the atoms it was fitted to."""
+    point = np.asarray(plane.point, dtype=float)
+    spread = float(np.linalg.norm(np.asarray(plane.points) - point, axis=1).max())
+    size = max(spread * 2.0 * _FITTED_PATCH_MARGIN, _FITTED_PATCH_MIN_SIZE)
+    return pv.Plane(center=point, direction=plane.normal, i_size=size, j_size=size,
+                    i_resolution=1, j_resolution=1)
 
 
 def _sphere_radius(z, scale: float = _ATOM_SCALE):

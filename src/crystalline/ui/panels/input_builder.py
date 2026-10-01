@@ -427,8 +427,8 @@ class InputBuilderDialog(QDialog):
         self._cell.setToolTip(
             "As computed: the cell on screen, in the setting of its space group that "
             "cell is in — a P2₁/n crystal is written as P 1 21/N 1 with its own cell.\n"
-            "Standard (pymatgen): pymatgen's conventional standard cell, written by "
-            "space-group number whenever that cell is in the standard setting."
+            "Standard setting: the conventional standard cell, written by "
+            "space-group number whenever it is the International Tables' standard setting."
         )
         form.addRow("Cell", self._cell)
         self._cell_note = QLabel()

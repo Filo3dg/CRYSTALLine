@@ -218,11 +218,11 @@ def test_measurement_annotations_are_drawn_and_survive_a_rebuild():
         [
             measure_mod.measure(positions, symbols, [0, 1]),        # distance
             measure_mod.measure(positions, symbols, [1, 0, 2]),     # angle
-            measure_mod.measure_plane(positions, symbols, [0, 1, 2]),  # plane
+            measure_mod.measure(positions, symbols, [0]),           # point
         ]
     )
     drawn = len(renderer._annotation_actors)
-    assert drawn >= 4  # two paths, a plane patch, and the labels
+    assert drawn >= 4  # two paths, a point marker, and the labels
 
     # An edit or a settings change clears the plotter — annotations must come back.
     renderer.set_settings(RenderSettings(show_bonds=False))
@@ -232,8 +232,8 @@ def test_measurement_annotations_are_drawn_and_survive_a_rebuild():
     assert renderer._annotation_actors == []
 
 
-def test_plane_annotation_has_no_floating_label():
-    """A plane patch carries no 'rms …' label — only the patch actor is drawn."""
+def test_point_annotation_has_no_floating_label():
+    """A point carries no label — its coordinates are in the list — only the marker is drawn."""
     from crystalline.core import measure as measure_mod
 
     water = Structure.empty()
@@ -243,8 +243,8 @@ def test_plane_annotation_has_no_floating_label():
     renderer = StructureRenderer(pv.Plotter(off_screen=True))
     renderer.set_structure(water)
 
-    renderer.set_annotations([measure_mod.measure_plane(water.positions, water.symbols, [0, 1, 2])])
-    assert len(renderer._annotation_actors) == 1  # just the patch, no label actor
+    renderer.set_annotations([measure_mod.measure(water.positions, water.symbols, [0])])
+    assert len(renderer._annotation_actors) == 1  # just the marker, no label actor
 
 
 def test_measurement_colours_come_from_settings():
@@ -1472,6 +1472,31 @@ def test_a_molecule_has_no_lattice_planes():
     assert renderer.lattice_region() is None
     renderer.set_lattice_planes([LatticePlane((1, 0, 0))], None)
     assert renderer._lattice_plane_actors == []
+
+
+def test_a_fitted_plane_crosses_the_cell_or_covers_a_molecule():
+    """Fitted to atoms, a plane is drawn where it was fitted: across the cell on
+    screen like an (hkl) plane, and over its own atoms where there is no cell."""
+    from crystalline.core.lattice_planes import LatticePlane, fit_plane
+
+    nacl = bulk("NaCl", "rocksalt", a=5.64, cubic=True)
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(Structure.from_ase(nacl))
+    # three atoms on (1 1 1) at ½: the fit is that plane, cut to the same polygon
+    on_plane = np.array([[2.82, 0, 0], [0, 2.82, 0], [0, 0, 2.82]])
+    renderer.set_lattice_planes([fit_plane(on_plane)], nacl.cell[:])
+    fitted = renderer._lattice_plane_actors[0].GetMapper().GetInput()
+    renderer.set_lattice_planes([LatticePlane((1, 1, 1), 0.5)], nacl.cell[:])
+    indexed = renderer._lattice_plane_actors[0].GetMapper().GetInput()
+    assert fitted.area == pytest.approx(indexed.area, rel=1e-6)
+
+    water = Structure.from_ase(Atoms("H2O", positions=[(0, 0, 0), (0.96, 0, 0), (-0.24, 0.93, 0)]))
+    renderer.set_structure(water)
+    renderer.set_lattice_planes([fit_plane(water.positions)], None)
+    patch = renderer._lattice_plane_actors[0].GetMapper().GetInput()
+    bounds = np.array(patch.GetBounds()).reshape(3, 2)
+    assert np.ptp(bounds[2]) == pytest.approx(0.0, abs=1e-9)   # flat in the molecule's plane
+    assert np.ptp(bounds[0]) >= 0.96                            # and wider than its atoms
 
 
 def test_a_plane_is_drawn_at_its_own_opacity_and_restyled_in_place():

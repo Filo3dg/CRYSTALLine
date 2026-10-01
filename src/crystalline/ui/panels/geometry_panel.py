@@ -1,14 +1,16 @@
 """Geometry panel: measure the selection, and edit atoms with the mouse.
 
-Docked beside Info and Display. Three parts:
+Docked beside Info and Display. Three parts, each a section that folds away
+under its header, as the Display panel's do; which are open is remembered:
 
-* **Measure** — turn the current 3D selection into a distance (2 atoms), angle
-  (3), dihedral (4) or least-squares plane (3+), keep a list of them, and draw
-  the ones that are ticked over the structure as points/lines/planes.
-* **Lattice planes (hkl)** — draw a crystallographic plane, or its whole
-  family, from its Miller indices alone: placed at a typed position along the
-  normal or through the selected atom, with d(hkl) and the atoms lying on it.
-  No atoms have to be picked and fitted, as the plane fit needs.
+* **Measure** — turn the current 3D selection into a position (1 atom), a
+  distance (2), an angle (3) or a dihedral (4), keep a list of them, and draw
+  the ones that are ticked over the structure as points and lines.
+* **Lattice planes** — draw a crystallographic plane, or its whole family,
+  from its Miller indices: placed at a typed position along the normal or
+  through the selected atom, with d(hkl) and the atoms lying on it. Or fit a
+  plane to three or more selected atoms, kept exactly as fitted and listed with
+  its rms deviation and the (hkl) nearest to it.
 * **Atoms** — add, delete, duplicate, re-element, translate the selection and
   place a single atom at typed cartesian coordinates, without going to the Edit
   menu. These mirror the Edit-menu actions and are
@@ -33,7 +35,6 @@ from PySide6.QtWidgets import (
     QColorDialog,
     QComboBox,
     QDoubleSpinBox,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -49,6 +50,9 @@ from PySide6.QtWidgets import (
 from crystalline.core import lattice_planes as lp
 from crystalline.core import measure as measure_mod
 from crystalline.core.structure import Structure
+from crystalline.ui import preferences
+from crystalline.ui.panels.controls import Section
+from crystalline.ui.safety import guard
 from crystalline.ui.widgets.miller import MillerIndices
 
 # Same starter palette the (hidden) structure panel used; free text is allowed.
@@ -82,6 +86,8 @@ _PLANE_COLORS = ("#e6550d", "#3182bd", "#31a354", "#756bb1", "#d6616b", "#8c6d31
 _LIST_HINT_HEIGHT = 96
 # The opacity box, as wide as the value boxes of the Display panel.
 _OPACITY_BOX_WIDTH = 66
+# The panel's sections: the key each is remembered under, and its header.
+_SECTIONS = (("measure", "Measure"), ("planes", "Lattice planes"), ("atoms", "Atoms"))
 
 
 class GeometryPanel(QWidget):
@@ -112,9 +118,9 @@ class GeometryPanel(QWidget):
         self._miller_cell: Optional[np.ndarray] = None
         self._next_plane_colour = 0
 
-        # Three groups do not fit a short dock, and a dock's minimum height is
-        # the window's: scroll, as the Display panel does, rather than make the
-        # window refuse to get shorter. Downwards only — the rows compress.
+        # Three sections open do not fit a short dock, and a dock's minimum
+        # height is the window's: scroll, as the Display panel does, rather than
+        # make the window refuse to get shorter. Downwards only — the rows compress.
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea(self)
@@ -126,42 +132,87 @@ class GeometryPanel(QWidget):
         scroll.setWidget(body)
 
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-        layout.addWidget(self._build_measure_group(), 1)
-        layout.addWidget(self._build_planes_group(), 1)
-        layout.addWidget(self._build_atoms_group())
-        layout.addStretch(0)
+        layout.setContentsMargins(14, 4, 14, 18)  # the Display panel's
+        layout.setSpacing(0)  # sections space themselves
+        # Each a header that folds the section away, as in the Display panel:
+        # someone who only ever measures need not scroll past the atom tools.
+        builders = {"measure": self._build_measure_group,
+                    "planes": self._build_planes_group,
+                    "atoms": self._build_atoms_group}
+        self._sections = {}
+        self._restoring_sections = False
+        widest = 0
+        for key, title in _SECTIONS:
+            section = Section(layout, title, collapsed=not self._remembered_open(key))
+            content = builders[key]()
+            widest = max(widest, content.minimumSizeHint().width(),
+                         section.header.minimumSizeHint().width())
+            section.add_wide(content)
+            section.header.toggled.connect(
+                lambda open_, key=key: self._remember_section(key, open_)
+            )
+            self._sections[key] = section
+        layout.addStretch(1)
         # Never narrower than the rows plus a scroll bar, which would cut their
-        # right edge off once the scroll bar appears.
+        # right edge off once the scroll bar appears. Taken from each section's
+        # rows rather than from the body, which leaves a folded section out —
+        # and, before the panel is first shown, an open one too — so unfolding
+        # a section never asks the dock to widen.
+        margins = layout.contentsMargins()
         scroll.setMinimumWidth(
-            body.minimumSizeHint().width() + scroll.verticalScrollBar().sizeHint().width()
+            widest + margins.left() + margins.right()
+            + scroll.verticalScrollBar().sizeHint().width()
         )
         self._sync_plane_form()
         self._sync_buttons()
 
+    # ── sections ────────────────────────────────────────────────────────
+    @staticmethod
+    def _remembered_open(key: str) -> bool:
+        return preferences.section_open(f"geometry/{key}")
+
+    def _remember_section(self, key: str, open_: bool) -> None:
+        if not self._restoring_sections:
+            preferences.set_section_open(f"geometry/{key}", open_)
+
+    def section_open(self, key: str) -> bool:
+        """Whether the section ``key`` (``"measure"``, ``"planes"``, ``"atoms"``) is open."""
+        return self._sections[key].header.isChecked()
+
+    def _restore_sections(self) -> None:
+        """Open and close the sections as they were last left — in any tab."""
+        self._restoring_sections = True
+        try:
+            for key, section in self._sections.items():
+                section.header.setChecked(self._remembered_open(key))
+        finally:
+            self._restoring_sections = False
+
+    @guard()
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt's name
+        """Each tab has a panel of its own: one shown again takes up the
+        sections as they were last left in whichever tab that was."""
+        self._restore_sections()
+        super().showEvent(event)
+
     # ── construction ────────────────────────────────────────────────────
     def _build_measure_group(self) -> QWidget:
-        group = QGroupBox("Measure")
+        group = QWidget()
         box = QVBoxLayout(group)
+        box.setContentsMargins(0, 0, 0, 0)
 
         self._hint = QLabel(measure_mod.selection_hint(0))
         self._hint.setWordWrap(True)
         self._hint.setStyleSheet("color: palette(mid);")
         box.addWidget(self._hint)
 
-        row = QHBoxLayout()
         self._measure_btn = QPushButton("Measure selection")
         self._measure_btn.setToolTip(
-            "2 atoms → distance, 3 → angle, 4 → dihedral, 5+ → plane fit"
+            "1 atom → position, 2 → distance, 3 → angle, 4 → dihedral. "
+            "A plane through the atoms is fitted under Lattice planes."
         )
         self._measure_btn.clicked.connect(self._measure_selection)
-        row.addWidget(self._measure_btn, 1)
-        self._plane_btn = QPushButton("Fit plane")
-        self._plane_btn.setToolTip("Least-squares plane through 3 or more selected atoms")
-        self._plane_btn.clicked.connect(self._measure_plane)
-        row.addWidget(self._plane_btn)
-        box.addLayout(row)
+        box.addWidget(self._measure_btn)
 
         # Ticked measurements are drawn in the 3D view.
         self._list = _CompactList()
@@ -188,8 +239,9 @@ class GeometryPanel(QWidget):
         return group
 
     def _build_planes_group(self) -> QWidget:
-        self._planes_group = group = QGroupBox("Lattice planes (hkl)")
+        self._planes_group = group = QWidget()
         box = QVBoxLayout(group)
+        box.setContentsMargins(0, 0, 0, 0)
 
         # Which cell the indices are in: the one thing that decides what (001)
         # means, so it is said rather than left to be guessed.
@@ -246,6 +298,18 @@ class GeometryPanel(QWidget):
         row.addWidget(self._plane_atom_btn, 1)
         box.addLayout(row)
 
+        # The other way to a plane: from atoms rather than from indices. Kept as
+        # fitted — a molecule's plane is seldom a lattice plane, and snapping it
+        # to the nearest one would tilt it off the atoms — and the row names the
+        # (hkl) it is closest to.
+        self._fit_plane_btn = QPushButton("Fit to selected atoms")
+        self._fit_plane_btn.setToolTip(
+            "Least-squares plane through 3 or more selected atoms, drawn exactly as "
+            "fitted and listed with its rms deviation and the nearest (hkl)"
+        )
+        self._fit_plane_btn.clicked.connect(self._add_fitted_plane)
+        box.addWidget(self._fit_plane_btn)
+
         self._plane_list = _CompactList()
         self._plane_list.setToolTip("Tick a plane to show it in the 3D view")
         self._plane_list.setSelectionMode(QListWidget.ExtendedSelection)
@@ -298,8 +362,9 @@ class GeometryPanel(QWidget):
         return group
 
     def _build_atoms_group(self) -> QWidget:
-        group = QGroupBox("Atoms")
+        group = QWidget()
         box = QVBoxLayout(group)
+        box.setContentsMargins(0, 0, 0, 0)
 
         # The gate the Edit menu applies invisibly — shown here so a greyed-out
         # button explains itself.
@@ -352,9 +417,6 @@ class GeometryPanel(QWidget):
         row.addWidget(self._translate_btn)
         box.addLayout(row)
 
-        # ── exact position of a single atom ─────────────────────────────
-        # Dragging is quick but never exact; a structure is usually specified by
-        # coordinates, so one atom at a time can be placed by typing them.
         # ── exact position of a single atom ─────────────────────────────
         # Dragging is quick but never exact; a structure is usually specified by
         # coordinates, so one atom at a time can be placed by typing them.
@@ -558,13 +620,6 @@ class GeometryPanel(QWidget):
             )
         )
 
-    def _measure_plane(self) -> None:
-        self._add_measurement(
-            measure_mod.measure_plane(
-                self._structure.positions, self._structure.symbols, self._selection
-            )
-        )
-
     def _add_measurement(self, result) -> None:
         if result is None:
             return
@@ -652,9 +707,10 @@ class GeometryPanel(QWidget):
         blocked = self._plane_list.blockSignals(True)  # relabelling is not a tick
         for plane, item in zip(self._planes, self._plane_items()):
             item.setText(self._plane_summary(plane))
+            item.setToolTip(self._plane_tooltip(plane))
         self._plane_list.blockSignals(blocked)
 
-    def add_lattice_plane(self, plane: lp.LatticePlane) -> None:
+    def add_lattice_plane(self, plane: lp.AnyPlane) -> None:
         """Append ``plane`` to the list, shown, in the next free colour if it has none."""
         if plane.color is None:
             plane = dataclasses.replace(
@@ -663,6 +719,7 @@ class GeometryPanel(QWidget):
             self._next_plane_colour += 1
         self._planes.append(plane)
         item = QListWidgetItem(self._plane_summary(plane))
+        item.setToolTip(self._plane_tooltip(plane))
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
         item.setCheckState(Qt.Checked)  # shown straight away, like a measurement
         item.setIcon(_colour_swatch(plane.color))
@@ -701,25 +758,63 @@ class GeometryPanel(QWidget):
             opacity=self.plane_opacity(),
         ))
 
-    def _atoms_on(self, plane: lp.LatticePlane) -> np.ndarray:
-        if self._miller_cell is None or not len(self._structure):
+    def _add_fitted_plane(self) -> None:
+        """The least-squares plane through the selected atoms, as fitted."""
+        if len(self._selection) < 3:
+            return
+        positions = np.asarray(self._structure.positions, dtype=float)[self._selection]
+        self.add_lattice_plane(lp.fit_plane(positions, opacity=self.plane_opacity()))
+
+    def _atoms_on(self, plane: lp.AnyPlane) -> np.ndarray:
+        if not len(self._structure):
+            return np.empty(0, dtype=int)
+        if isinstance(plane, lp.FittedPlane):  # Cartesian: needs no lattice
+            return lp.atoms_on(None, plane, self._structure.positions)
+        if self._miller_cell is None:
             return np.empty(0, dtype=int)
         return lp.atoms_on(self._miller_cell, plane, self._structure.positions)
 
-    def _plane_summary(self, plane: lp.LatticePlane) -> str:
-        """``(1 1 1) at 0.50 d · d 3.256 Å · 4 atoms`` — or ``… family …``."""
+    def _plane_summary(self, plane: lp.AnyPlane) -> str:
+        """``(1 1 1) at 0.50 d · d 3.256 Å · 4 atoms`` — or ``… family …``, or a fit."""
+        count = len(self._atoms_on(plane))
+        atoms = f"{count} atom" + ("" if count == 1 else "s")
+        if isinstance(plane, lp.FittedPlane):
+            return self._fitted_summary(plane, atoms)
         if self._miller_cell is None:
             return f"{lp.label(plane.miller)} (no lattice)"
         name = lp.label(plane.miller, self._miller_cell)
         d = lp.spacing(self._miller_cell, plane.miller)
-        count = len(self._atoms_on(plane))
-        atoms = f"{count} atom" + ("" if count == 1 else "s")
         if plane.family:
             shift = plane.offset - np.floor(plane.offset)
             where = "family" if shift < 1e-6 or shift > 1 - 1e-6 else f"family +{shift:.2f} d"
         else:
             where = f"at {plane.offset:.2f} d"
         return f"{name} {where} · d {d:.3f} Å · {atoms}"
+
+    def _fitted_summary(self, plane: lp.FittedPlane, atoms: str) -> str:
+        """``Fit ≈ (1 2 0) 1.3° · rms 0.012 Å · 8 atoms`` — as long as an (hkl) row.
+
+        The nearest (hkl) is quoted in the same cell as the typed planes', and
+        left out for a molecule, which has none. How many atoms were fitted is
+        in the row's tooltip (:meth:`_plane_tooltip`).
+        """
+        name = "Fit"
+        if self._miller_cell is not None:
+            miller, angle = lp.nearest_miller(self._miller_cell, plane.normal)
+            name += f" ≈ {lp.label(miller, self._miller_cell)} {angle:.1f}°"
+        return f"{name} · rms {plane.rms:.3f} Å · {atoms}"
+
+    def _plane_tooltip(self, plane: lp.AnyPlane) -> str:
+        """What a fitted plane's row leaves out; nothing for an (hkl) plane."""
+        if not isinstance(plane, lp.FittedPlane):
+            return ""
+        text = (f"Least-squares plane through {len(plane.points)} atoms, which lie "
+                f"{plane.rms:.3f} Å from it (rms).")
+        if self._miller_cell is not None:
+            miller, angle = lp.nearest_miller(self._miller_cell, plane.normal)
+            text += (f"\nThe nearest lattice plane, with indices up to {lp.NEAREST_MAX_INDEX}, "
+                     f"is {lp.label(miller, self._miller_cell)}, {angle:.1f}° away.")
+        return text
 
     def _sync_plane_form(self) -> None:
         """Hint, i index and d(hkl) for the indices typed and the cell they are in."""
@@ -729,7 +824,8 @@ class GeometryPanel(QWidget):
         hexagonal = self._miller.hexagonal
         if cell is None:
             self._plane_hint.setText(
-                "A molecule has no lattice planes." if len(self._structure)
+                "A molecule has no lattice planes, but a plane can be fitted to its atoms."
+                if len(self._structure)
                 else "Open a crystal to draw its lattice planes."
             )
         else:
@@ -742,8 +838,7 @@ class GeometryPanel(QWidget):
             self._spacing_label.setText("d —")
         else:
             self._spacing_label.setText(f"d {lp.spacing(cell, miller):.3f} Å")
-        for widget in (self._plane_offset, self._family_check, self._miller,
-                       self._plane_opacity_slider, self._plane_opacity_box):
+        for widget in (self._plane_offset, self._family_check, self._miller):
             widget.setEnabled(cell is not None)
         self._sync_buttons()
 
@@ -820,8 +915,7 @@ class GeometryPanel(QWidget):
     def _sync_buttons(self) -> None:
         """Measuring needs a selection; editing needs editing mode as well."""
         count = len(self._selection)
-        self._measure_btn.setEnabled(count >= 1)
-        self._plane_btn.setEnabled(count >= 3)
+        self._measure_btn.setEnabled(1 <= count <= 4)
         self._remove_btn.setEnabled(bool(self._measurements))
         self._clear_btn.setEnabled(bool(self._measurements))
         self._color_btn.setEnabled(bool(self._list.selectedItems()))
@@ -831,10 +925,17 @@ class GeometryPanel(QWidget):
         can_place = self._miller_cell is not None and self._typed_miller() is not None
         self._add_plane_btn.setEnabled(can_place)
         self._plane_atom_btn.setEnabled(can_place and count == 1)
+        # A fit needs only the atoms — a molecule's too, which has no lattice.
+        self._fit_plane_btn.setEnabled(count >= 3)
         picked = bool(self._plane_list.selectedItems())
         self._plane_colour_btn.setEnabled(picked)
-        self._plane_select_btn.setEnabled(picked and self._miller_cell is not None)
+        self._plane_select_btn.setEnabled(picked)
         self._plane_remove_btn.setEnabled(picked)
+        # Opacity is for planes there are, or will be: none in a molecule until
+        # one is fitted.
+        has_planes = self._miller_cell is not None or bool(self._planes)
+        self._plane_opacity_slider.setEnabled(has_planes)
+        self._plane_opacity_box.setEnabled(has_planes)
 
         self._add_btn.setEnabled(self._editing)
         on_selection = self._editing and count >= 1

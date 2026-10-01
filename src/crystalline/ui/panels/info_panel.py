@@ -35,7 +35,7 @@ _CELL_TOOLTIP = (
     "Which cell the lattice parameters describe.\n\n"
     "As computed: the cell the calculation used (the one drawn in the 3D view), "
     "with the space group named in that cell's setting — P2₁/n stays P2₁/n.\n"
-    "Standard (pymatgen): pymatgen's conventional standard cell, which can be a "
+    "Standard setting: the conventional standard cell, which can be a "
     "different setting of the same group, with other lattice parameters."
 )
 _CELL_TOOLTIP_NA = "Only a 3D crystal has a choice of cell to describe it in."

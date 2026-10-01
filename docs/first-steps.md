@@ -59,7 +59,7 @@ The window is divided into dockable panels:
 | --- | --- | --- |
 | Left | **Info** | space group or layer group, lattice parameters, density, and a summary of the calculation |
 | Left | **Display** | the settings of the 3D view |
-| Left | **Geometry** | distances, angles, dihedrals and planes |
+| Left | **Geometry** | distances, angles and dihedrals, lattice planes, and the atom tools |
 | Right | **Phonons** | the list of vibrational modes and the animation controls |
 | Bottom | **Plots** | the property plots, in tabs |
 

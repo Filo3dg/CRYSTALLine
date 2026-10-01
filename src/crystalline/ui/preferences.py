@@ -11,6 +11,7 @@ from __future__ import annotations
 from crystalline.core.cell_setting import CELL_CHOICES, DEFAULT_CHOICE
 
 _CELL_KEY = "crystallography/cell"
+_SECTION_KEY = "sections/{}"
 
 
 def _settings():
@@ -44,4 +45,24 @@ def set_cell_choice(choice: str) -> None:
         pass
 
 
-__all__ = ["cell_choice", "set_cell_choice"]
+def section_open(name: str, default: bool = True) -> bool:
+    """Whether the panel section ``name`` (``"geometry/measure"``, say) was left open."""
+    try:
+        value = _settings().value(_SECTION_KEY.format(name), default)
+    except Exception:  # noqa: BLE001 - unreadable settings: the default still works
+        return default
+    # QSettings hands booleans back as the strings "true"/"false" on some platforms.
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "0", "")
+    return bool(value)
+
+
+def set_section_open(name: str, open_: bool) -> None:
+    """Remember whether the section ``name`` is open (silently, if it can't be)."""
+    try:
+        _settings().setValue(_SECTION_KEY.format(name), bool(open_))
+    except Exception:  # noqa: BLE001 - can't persist; it still applies this session
+        pass
+
+
+__all__ = ["cell_choice", "section_open", "set_cell_choice", "set_section_open"]

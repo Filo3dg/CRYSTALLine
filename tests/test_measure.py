@@ -1,4 +1,7 @@
-"""Geometry measurements: distances, angles, dihedrals and plane fits."""
+"""Geometry measurements: positions, distances, angles and dihedrals.
+
+Plane fits are lattice planes now — see test_lattice_planes.py.
+"""
 
 import numpy as np
 import pytest
@@ -41,22 +44,6 @@ def test_dihedral_is_signed():
     assert abs(left) == pytest.approx(90.0)
 
 
-def test_plane_fit_is_exact_for_coplanar_atoms():
-    square = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float)
-    centroid, normal, rms = M.plane(square, [0, 1, 2, 3])
-    assert centroid == pytest.approx([0.5, 0.5, 0.0])
-    assert abs(np.dot(normal, [0, 0, 1])) == pytest.approx(1.0)  # the z normal
-    assert rms == pytest.approx(0.0, abs=1e-12)
-
-
-def test_plane_rms_reports_non_planarity():
-    puckered = np.array(
-        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0.5, 0.5, 0.4]], dtype=float
-    )
-    _c, _n, rms = M.plane(puckered, [0, 1, 2, 3, 4])
-    assert rms > 0.1
-
-
 def test_measure_dispatches_on_how_many_atoms_are_selected():
     kinds = {
         1: M.POINT,
@@ -70,18 +57,9 @@ def test_measure_dispatches_on_how_many_atoms_are_selected():
         result = M.measure(positions, symbols, range(count))
         assert result is not None and result.kind == kind
         assert result.indices == tuple(range(count))
-    assert M.measure(positions, symbols, range(5)).kind == M.PLANE  # 5+ can only be a plane
+    assert M.measure(positions, symbols, range(5)) is None  # a plane is fitted with the lattice planes
     assert M.measure(positions, symbols, []) is None
-
-
-def test_measure_plane_needs_three_atoms():
-    positions = np.eye(4, 3)
-    symbols = ["C"] * 4
-    assert M.measure_plane(positions, symbols, [0, 1]) is None
-    result = M.measure_plane(positions, symbols, [0, 1, 2])
-    assert result is not None and result.kind == M.PLANE
-    assert result.origin is not None and result.normal is not None
-    assert np.linalg.norm(result.normal) == pytest.approx(1.0)
+    assert "Lattice planes" in M.selection_hint(5)          # and the hint says where
 
 
 def test_summaries_carry_the_symbols_and_units():

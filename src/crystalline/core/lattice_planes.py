@@ -25,6 +25,11 @@ Hexagonal and trigonal crystals are indexed by four Miller–Bravais indices
 ``(h k i l)``, where ``i = -(h + k)`` is redundant but is how such planes are
 written; :func:`four_index` gives it when the reference cell is hexagonal.
 
+A plane can also be fitted to chosen atoms (:func:`fit_plane`). That one is
+kept exactly as fitted, as a :class:`FittedPlane`, and only *described* by the
+(hkl) nearest to it (:func:`nearest_miller`): the atoms of a molecule seldom lie
+on a lattice plane, and rounding the fit to one would tilt it off them.
+
 Qt- and renderer-free, like the rest of ``core``.
 """
 
@@ -32,7 +37,8 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from functools import lru_cache
+from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -47,6 +53,11 @@ MAX_FAMILY_PLANES = 60
 # How opaque a plane's sheet is drawn unless told otherwise: enough to see, not
 # enough to hide the atoms behind it. Its outline is always drawn solid.
 DEFAULT_OPACITY = 0.35
+
+# A fitted plane is described by the nearest (hkl) with indices up to this: the
+# low-index planes a direction is compared with, not the (7 11 3) that a bound
+# as high as the Miller boxes' would always find within a degree or two.
+NEAREST_MAX_INDEX = 6
 
 
 @dataclass(frozen=True)
@@ -71,10 +82,70 @@ class LatticePlane:
         object.__setattr__(self, "offset", float(self.offset))
         object.__setattr__(self, "opacity", min(1.0, max(0.0, float(self.opacity))))
 
-    def drawn_the_same(self, other: "LatticePlane") -> bool:
+    def drawn_the_same(self, other) -> bool:
         """Whether ``other`` is this plane in the same place — differing, at
         most, in how it looks. Such a change needs no new geometry."""
-        return (self.miller, self.offset, self.family) == (other.miller, other.offset, other.family)
+        return isinstance(other, LatticePlane) and (
+            (self.miller, self.offset, self.family) == (other.miller, other.offset, other.family))
+
+
+@dataclass(frozen=True)
+class FittedPlane:
+    """The least-squares plane through chosen atoms, kept exactly as fitted.
+
+    Listed and drawn with the (hkl) planes, but placed by the atoms rather than
+    by indices. ``point`` (the atoms' centroid, Å) and the unit ``normal`` are
+    Cartesian; ``rms`` is the atoms' root-mean-square distance from the plane,
+    0 for exactly coplanar ones. ``points`` are the atoms fitted, which size the
+    patch drawn where there is no cell to draw the plane across — a molecule.
+    """
+
+    point: Tuple[float, float, float]
+    normal: Tuple[float, float, float]
+    rms: float
+    points: Tuple[Tuple[float, float, float], ...]
+    color: Optional[str] = None
+    opacity: float = DEFAULT_OPACITY
+
+    # One plane: a fit has no spacing to repeat at, so never a family.
+    family = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "point", tuple(float(v) for v in self.point))
+        object.__setattr__(self, "normal", tuple(float(v) for v in self.normal))
+        object.__setattr__(self, "rms", float(self.rms))
+        object.__setattr__(self, "points",
+                           tuple(tuple(float(v) for v in p) for p in self.points))
+        object.__setattr__(self, "opacity", min(1.0, max(0.0, float(self.opacity))))
+
+    def drawn_the_same(self, other) -> bool:
+        """Whether ``other`` is this fit in the same place — see :meth:`LatticePlane.drawn_the_same`."""
+        return isinstance(other, FittedPlane) and (
+            (self.point, self.normal, self.points) == (other.point, other.normal, other.points))
+
+
+AnyPlane = Union[LatticePlane, FittedPlane]
+
+
+def fit_plane(positions, color: Optional[str] = None,
+              opacity: float = DEFAULT_OPACITY) -> FittedPlane:
+    """The least-squares plane through three or more Cartesian ``positions``.
+
+    Its normal is the singular vector of least variance of the centred
+    coordinates, its sign fixed so the largest component is positive, keeping
+    the result the same from call to call. Raises ``ValueError`` for fewer than
+    three positions, which do not fix a plane.
+    """
+    points = np.asarray(positions, dtype=float).reshape(-1, 3)
+    if len(points) < 3:
+        raise ValueError("a plane is fitted to three or more atoms")
+    centroid = points.mean(axis=0)
+    _u, _s, vh = np.linalg.svd(points - centroid)
+    normal = np.asarray(vh[2], dtype=float)
+    if normal[int(np.argmax(np.abs(normal)))] < 0:
+        normal = -normal
+    rms = float(np.sqrt(np.mean(((points - centroid) @ normal) ** 2)))
+    return FittedPlane(centroid, normal, rms, points, color=color, opacity=opacity)
 
 
 # ── indices ───────────────────────────────────────────────────────────────
@@ -192,13 +263,44 @@ def offsets_across(cell, miller: Sequence[int], offset: float, points,
     return found[:limit] if found else [float(offset)]
 
 
-def distances_to(cell, plane: LatticePlane, positions) -> np.ndarray:
+def nearest_miller(cell, normal, max_index: int = NEAREST_MAX_INDEX):
+    """``(miller, angle)``: the (hkl) of ``cell`` closest in direction to ``normal``.
+
+    Among indices up to ``max_index`` with no common factor; ``angle`` (degrees)
+    is between the two planes, 0 when ``normal`` is exactly that of (hkl).
+    Of planes equally close, the one with the smaller indices.
+    """
+    candidates = _primitive_indices(int(max_index))
+    g = candidates @ reciprocal_lattice(cell)
+    n = np.asarray(normal, dtype=float)
+    n = n / np.linalg.norm(n)
+    # atan2 rather than arccos: arccos of a cosine a hair under 1 is off by a
+    # microdegree, and a plane fitted exactly to (hkl) should read 0.0°.
+    angles = np.degrees(np.arctan2(np.linalg.norm(np.cross(g, n), axis=1), np.abs(g @ n)))
+    best = np.lexsort((np.abs(candidates).sum(axis=1), np.round(angles, 6)))[0]
+    return tuple(int(v) for v in candidates[best]), float(angles[best])
+
+
+@lru_cache(maxsize=None)
+def _primitive_indices(max_index: int) -> np.ndarray:
+    """Every (hkl) up to ``max_index``, one of each ± pair, with no common factor."""
+    span = range(-max_index, max_index + 1)
+    triples = np.asarray([t for t in itertools.product(span, repeat=3) if any(t)])
+    leading = triples[np.arange(len(triples)), np.argmax(triples != 0, axis=1)]
+    triples = triples[leading > 0]
+    return triples[np.gcd.reduce(np.abs(triples), axis=1) == 1]
+
+
+def distances_to(cell, plane: AnyPlane, positions) -> np.ndarray:
     """Signed distance (Å) of each position from ``plane``, along its normal.
 
     For a family, from the nearest plane of the family. ``(r·G - offset) d``,
-    so a tolerance on it does not change meaning with the spacing.
+    so a tolerance on it does not change meaning with the spacing. A fitted
+    plane is Cartesian and needs no ``cell``.
     """
     positions = np.asarray(positions, dtype=float).reshape(-1, 3)
+    if isinstance(plane, FittedPlane):
+        return (positions - np.asarray(plane.point)) @ np.asarray(plane.normal)
     g = reciprocal_vector(cell, plane.miller)
     distance = positions @ g - plane.offset
     if plane.family:
@@ -206,7 +308,7 @@ def distances_to(cell, plane: LatticePlane, positions) -> np.ndarray:
     return distance / float(np.linalg.norm(g))
 
 
-def atoms_on(cell, plane: LatticePlane, positions,
+def atoms_on(cell, plane: AnyPlane, positions,
              tolerance: float = ON_PLANE_TOLERANCE) -> np.ndarray:
     """Indices of the atoms lying on ``plane`` (on any plane of it, for a family)."""
     return np.flatnonzero(np.abs(distances_to(cell, plane, positions)) < tolerance)
@@ -221,16 +323,21 @@ def region_corners(origin, vectors) -> np.ndarray:
 
 
 __all__ = [
+    "AnyPlane",
     "DEFAULT_OPACITY",
+    "FittedPlane",
     "LatticePlane",
     "MAX_FAMILY_PLANES",
+    "NEAREST_MAX_INDEX",
     "ON_PLANE_TOLERANCE",
     "atoms_on",
     "distances_to",
+    "fit_plane",
     "four_index",
     "is_hexagonal",
     "label",
     "miller_indices",
+    "nearest_miller",
     "offset_of",
     "offsets_across",
     "plane_frame",
