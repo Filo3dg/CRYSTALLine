@@ -14,7 +14,7 @@ menu before the toolbar's ``_update_view_actions`` call.
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QAction, QActionGroup, QIcon
+from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from PySide6.QtWidgets import QLabel, QToolBar, QToolButton, QWidget
 
 from crystalline.core.cells import CellView
@@ -165,10 +165,16 @@ def build_menus(window) -> None:
 def _build_file_menu(window) -> None:
     file_menu = window.menuBar().addMenu("&File")
 
+    # Every file opens in a tab of its own; several can be chosen at once.
     open_action = QAction("Open…", window)
     open_action.setShortcut("Ctrl+O")
     open_action.triggered.connect(window._open_file)
     file_menu.addAction(open_action)
+
+    close_tab = QAction("Close tab", window)
+    close_tab.setShortcuts(QKeySequence.Close)  # Ctrl+W (and Ctrl+F4), ⌘W on macOS
+    close_tab.triggered.connect(window._close_current_tab)
+    file_menu.addAction(close_tab)
 
     # Importing atoms only makes sense once there's a structure to add them to —
     # enabled by ``_update_import_action`` after a file is opened.
@@ -451,6 +457,18 @@ def _build_view_menu(window) -> None:
     restore_all = QAction("Restore all panels", window)
     restore_all.triggered.connect(window._restore_all_panels)
     panels_menu.addAction(restore_all)
+
+    # Between open files. The platform's own keys for "next document":
+    # Ctrl+Tab on Windows and Linux, ⌘⇧] / ⌘⇧[ on macOS.
+    view_menu.addSeparator()
+    next_tab = QAction("Next tab", window)
+    next_tab.setShortcuts(QKeySequence.NextChild)
+    next_tab.triggered.connect(window._next_tab)
+    view_menu.addAction(next_tab)
+    previous_tab = QAction("Previous tab", window)
+    previous_tab.setShortcuts(QKeySequence.PreviousChild)
+    previous_tab.triggered.connect(window._previous_tab)
+    view_menu.addAction(previous_tab)
 
     view_menu.addSeparator()
     for label, axis in (("Along a axis", 0), ("Along b axis", 1), ("Along c axis", 2)):

@@ -178,6 +178,7 @@ class _ViewHarness:
     _apply_history = MainWindow._apply_history
     _derivation_matches = MainWindow._derivation_matches
     _update_boundary_control = MainWindow._update_boundary_control
+    _update_supercell_action = MainWindow._update_supercell_action
     _apply_cell_view = MainWindow._apply_cell_view
     _compose_view = MainWindow._compose_view
     _replace_structure = MainWindow._replace_structure
@@ -248,6 +249,12 @@ class _ViewHarness:
 
     def _update_export_actions(self):
         pass
+
+    # One file and no tab bar: a slot meant for a tab runs as it is.
+    _tab = None
+
+    def _routed(self, tab, slot):
+        return slot
 
 
 def _harness():

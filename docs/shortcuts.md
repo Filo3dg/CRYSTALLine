@@ -22,7 +22,8 @@ the two, so {kbd}`Ctrl+O` here is {kbd}`⌘O` on a Mac.
 
 | | |
 | --- | --- |
-| Open… | {kbd}`Ctrl+O` |
+| Open… | {kbd}`Ctrl+O` — each file in a tab of its own |
+| Close tab | {kbd}`Ctrl+W` |
 | Import atoms into structure… | |
 | Save structure as .gui… | |
 | Save structure as .cif… | |
@@ -69,7 +70,11 @@ only in editing mode.
 | Display settings | the Display panel |
 | Panels | show or hide each panel |
 | Restore all panels | put every panel back |
+| Next tab / Previous tab | {kbd}`Ctrl+Tab` / {kbd}`Ctrl+Shift+Tab` |
 | Along a/b/c axis, Along a\*/b\*/c\* | the same as the **VIEW** chips |
+
+On macOS the shortcuts use {kbd}`⌘` for {kbd}`Ctrl`; the tabs are stepped
+through with {kbd}`⌘⇧]` and {kbd}`⌘⇧[`.
 
 ## Plot
 

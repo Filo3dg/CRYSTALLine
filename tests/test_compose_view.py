@@ -241,6 +241,7 @@ class _StubTileWindow:
         self.applied += 1
 
     _set_supercell = MainWindow._set_supercell
+    _update_supercell_action = MainWindow._update_supercell_action
     _tile_to_qpoint = MainWindow._tile_to_qpoint
 
 

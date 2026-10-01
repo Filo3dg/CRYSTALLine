@@ -87,6 +87,21 @@ class Viewport(QWidget):
         # to the window comes straight back here and recurses until the stack
         # runs out.
         self.interactor.setAcceptDrops(False)
+        # With several files open there are several views, one on screen. VTK
+        # must not draw into one that is not: its window is not mapped, and
+        # rendering there corrupts the OpenGL state the visible one shares — the
+        # second file opened aborted the app on shader errors (pyvistaqt #762).
+        # So a render asked of a hidden view is held until it is shown.
+        self._render_held = False
+        render_now = self.interactor.render
+
+        def render_if_shown(*args, **kwargs):
+            if not self.interactor.isVisible():
+                self._render_held = True
+                return None
+            return render_now(*args, **kwargs)
+
+        self.interactor.render = render_if_shown
         self.renderer = StructureRenderer(self.interactor)
         self._structure: Optional[Structure] = None
         self._reference_cell: Optional[np.ndarray] = None  # original cell, for axis views
@@ -127,6 +142,11 @@ class Viewport(QWidget):
     def eventFilter(self, obj, event) -> bool:
         if obj is self.interactor:
             etype = event.type()
+            if etype == QEvent.Show and self._render_held:
+                # Drawn once it is on screen, on the next turn of the loop, when
+                # its window is mapped: whatever was asked of it while hidden.
+                self._render_held = False
+                QTimer.singleShot(0, self.interactor.render)
             if etype in (QEvent.Enter, QEvent.FocusIn):
                 self._drag.reactivate()
             elif etype == QEvent.MouseButtonRelease:

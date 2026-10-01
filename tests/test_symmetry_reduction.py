@@ -446,7 +446,7 @@ def test_the_window_applies_the_reduction_to_the_structure_it_holds():
     source = inspect.getsource(MainWindow._apply_symmetry_reduction)
     assert "self.structure.set_reduced_symmetry" in source
     # ...and the window wires the panel's signal to it
-    assert "reduction_changed" in inspect.getsource(MainWindow._connect_signals)
+    assert "reduction_changed" in inspect.getsource(MainWindow._connect_tab_signals)
 
 
 def test_a_derived_analysis_cell_carries_the_reduction():

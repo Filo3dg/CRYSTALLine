@@ -2,9 +2,9 @@
 
 Drag-and-drop has no discoverable affordance of its own: the only feedback the
 platform gives is a cursor badge, which says a drop is possible but not what it
-would do. Opening a file and importing atoms into one are different enough —
-one replaces the structure, the other appends to it and lands in the undo
-history — that saying which is about to happen is worth a panel.
+would do. Opening a file and importing atoms are different enough — one opens
+a tab of its own, the other appends to the structure on screen and lands in
+the undo history — that saying which is about to happen is worth a panel.
 
 It is inert: transparent to the pointer and refusing drops itself, so it never
 becomes the drop target it is describing.
