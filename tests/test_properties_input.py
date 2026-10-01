@@ -19,6 +19,7 @@ from crystalline.core.properties_input import (
     PropertiesSpec,
     XrdOptions,
     band_path,
+    band_path_kind,
     band_shrink,
     build_properties_input,
 )
@@ -741,3 +742,53 @@ def test_without_a_grid_pato_keeps_its_place():
 
     assert "PSCF" not in lines
     assert lines.index("PATO") < lines.index("PPAN")
+
+
+# ── the band path of a polymer (1D) ───────────────────────────────────────
+def _polymer() -> Structure:
+    """A chain along x, open across it — as CRYSTAL writes a POLYMER geometry.
+
+    The two open directions carry CRYSTAL's formal 500 Å parameters, which is
+    exactly what used to be mistaken for a lattice.
+    """
+    from ase import Atoms
+
+    return Structure.from_ase(Atoms(
+        "C2H2",
+        positions=[(0.0, 0.0, 0.0), (1.3, 0.0, 0.0), (0.0, 1.08, 0.0), (1.3, -1.08, 0.0)],
+        cell=[[2.6, 0.0, 0.0], [0.0, 500.0, 0.0], [0.0, 0.0, 500.0]],
+        pbc=[True, False, False],
+    ))
+
+
+def test_a_polymer_walks_from_gamma_to_the_edge_of_its_own_zone():
+    """A one-dimensional zone has two points, Γ and X.
+
+    Read as a crystal, a polymer looked tetragonal — the two 500 Å placeholders
+    counted as lattice vectors — and was offered a path through M, A and R,
+    which belong to no 1D zone. The path is now taken with the periodicity
+    known, as a slab's already was.
+    """
+    labels, segments = band_path(_polymer())
+
+    assert labels == [("G", "X")]
+    assert segments == [((0.0, 0.0, 0.0), (0.5, 0.0, 0.0))]
+    named = {name for pair in labels for name in pair}
+    assert not named & {"M", "A", "R", "Z", "K", "L", "W"}, "a 3D point in a 1D path"
+
+
+def test_a_polymers_path_is_written_over_a_shrinking_factor_of_two():
+    """Halves, so the deck says 1 0 0 over 2 rather than rounding to nothing."""
+    polymer = _polymer()
+
+    assert band_shrink(band_path(polymer)[1]) == 2
+
+    lines = _lines(PropertiesSpec(band=BandOptions(enabled=True)), polymer)
+    start = lines.index("BAND")
+    assert lines[start + 2].split()[:2] == ["1", "2"]     # one segment, shrink 2
+    assert lines[start + 3].split() == ["0", "0", "0", "1", "0", "0"]
+
+
+def test_a_polymer_is_offered_the_conventional_path_not_a_list_of_points():
+    """The editor's note has to match what was actually proposed."""
+    assert band_path_kind(_polymer()) == "standard"

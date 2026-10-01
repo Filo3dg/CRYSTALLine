@@ -291,6 +291,7 @@ class _StubQWindow:
         self.structure = shown if shown is not None else source
         self.rebuilds = 0
         self.pushed = []
+        self._modes_natom = None  # _show_modes records the geometry they fit
         window = self
 
         class _Panel:
@@ -308,6 +309,7 @@ class _StubQWindow:
     _compose_view = MainWindow._compose_view
     _reload_modes = MainWindow._reload_modes
     _set_qpoint = MainWindow._set_qpoint
+    _show_modes = MainWindow._show_modes  # how the panel is handed them
 
 
 def _qset(structure: Structure, qpoint):

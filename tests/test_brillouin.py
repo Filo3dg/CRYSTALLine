@@ -218,3 +218,48 @@ def test_an_unclassifiable_lattice_keeps_its_own_cell():
                                    pbc=True))
     lattice = zone_lattice(odd, PRIMITIVE)
     assert brillouin_zone(lattice)[0].shape[1] == 3
+
+
+# ── the zone of a polymer (1D) ────────────────────────────────────────────
+def _polymer(repeat: float = 2.6) -> Structure:
+    """A chain along x, with CRYSTAL's formal 500 Å across it."""
+    from ase import Atoms
+
+    return Structure.from_ase(Atoms(
+        "C2",
+        positions=[(0.0, 0.0, 0.0), (repeat / 2, 0.0, 0.0)],
+        cell=[[repeat, 0.0, 0.0], [0.0, 500.0, 0.0], [0.0, 0.0, 500.0]],
+        pbc=[True, False, False],
+    ))
+
+
+def test_a_polymers_zone_is_a_segment_not_a_needle():
+    """Built from all three vectors, a polymer's zone came out as a box a
+    five-hundredth of an inverse ångström thick — the width of the vacuum
+    CRYSTAL writes across the chain, and nothing about the crystal."""
+    vertices, faces = brillouin_zone(_polymer())
+
+    assert len(vertices) == 2
+    assert faces == [[0, 1]]
+    across = vertices.max(axis=0) - vertices.min(axis=0)
+    assert across[1] == across[2] == 0.0          # no width at all, not a small one
+
+
+def test_a_polymers_zone_runs_from_minus_half_b_to_plus_half_b():
+    repeat = 2.6
+    vertices, _faces = brillouin_zone(_polymer(repeat))
+
+    assert np.allclose(vertices[0], -vertices[1])           # centred on Γ
+    assert np.isclose(np.linalg.norm(vertices[1] - vertices[0]), 1.0 / repeat)
+
+
+def test_the_x_point_of_a_polymer_sits_at_the_end_of_its_zone():
+    """The labels have to land on the zone that is drawn, or the picker offers
+    a point beside the picture."""
+    polymer = _polymer()
+    vertices, _faces = brillouin_zone(polymer)
+    points = special_points(polymer)
+
+    assert set(points) == {"G", "X"}
+    x_cartesian = np.asarray(points["X"]) @ reciprocal_cell(polymer)
+    assert np.allclose(x_cartesian, vertices[1])

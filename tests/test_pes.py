@@ -12,6 +12,7 @@ import os
 
 import pytest
 
+import sample_data as sample  # noqa: E402
 from crystalline.crystalio.pes import (
     DIMENSIONS,
     PLOT_FUNCTIONS,
@@ -149,8 +150,7 @@ def test_a_mode_can_be_looked_up_by_its_crystal_index():
 
 
 # ── against a real run, when one is at hand ─────────────────────────────
-_REAL = os.path.expanduser(
-    "~/Desktop/PyCrystal/anharmonic_freq/CH4_anarmonic.out")
+_REAL = sample.path("methane/CH4_anarmonic.out") or ""
 
 
 @pytest.mark.skipif(not os.path.isfile(_REAL),

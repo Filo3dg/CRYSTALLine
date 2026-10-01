@@ -73,39 +73,43 @@ class BusyOverlay(ParentOverlay):
     # ── painting ────────────────────────────────────────────────────────
     @guard()
     def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        palette = self.palette()
+        # ``with``, not a bare end() at the bottom: if anything in here
+        # raises, the guard above catches it, and a painter left active
+        # keeps Qt painting on this widget for as long as the report
+        # holds the traceback. Destroying the device then takes the
+        # process down, far from the line that failed.
+        with QPainter(self) as painter:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            palette = self.palette()
 
-        scrim = QColor(palette.window().color())
-        scrim.setAlpha(_SCRIM_ALPHA)
-        painter.fillRect(self.rect(), scrim)
+            scrim = QColor(palette.window().color())
+            scrim.setAlpha(_SCRIM_ALPHA)
+            painter.fillRect(self.rect(), scrim)
 
-        centre = self.rect().center()
-        box = QRectF(
-            centre.x() - _SPINNER_SIZE / 2.0,
-            centre.y() - _SPINNER_SIZE / 2.0 - (10 if self._message else 0),
-            float(_SPINNER_SIZE), float(_SPINNER_SIZE),
-        )
-
-        track = QColor(palette.mid().color())
-        track.setAlpha(90)
-        painter.setPen(QPen(track, _SPINNER_WIDTH, Qt.SolidLine, Qt.RoundCap))
-        painter.drawArc(box, 0, 360 * 16)
-
-        painter.setPen(QPen(palette.highlight().color(), _SPINNER_WIDTH,
-                            Qt.SolidLine, Qt.RoundCap))
-        # Qt measures arcs in sixteenths of a degree, anticlockwise from 3 o'clock.
-        painter.drawArc(box, -self._angle * 16, -_ARC_SPAN * 16)
-
-        if self._message:
-            painter.setPen(palette.windowText().color())
-            painter.drawText(
-                self.rect().adjusted(0, _SPINNER_SIZE + 18, 0, 0),
-                Qt.AlignHCenter | Qt.AlignVCenter,
-                self._message,
+            centre = self.rect().center()
+            box = QRectF(
+                centre.x() - _SPINNER_SIZE / 2.0,
+                centre.y() - _SPINNER_SIZE / 2.0 - (10 if self._message else 0),
+                float(_SPINNER_SIZE), float(_SPINNER_SIZE),
             )
-        painter.end()
+
+            track = QColor(palette.mid().color())
+            track.setAlpha(90)
+            painter.setPen(QPen(track, _SPINNER_WIDTH, Qt.SolidLine, Qt.RoundCap))
+            painter.drawArc(box, 0, 360 * 16)
+
+            painter.setPen(QPen(palette.highlight().color(), _SPINNER_WIDTH,
+                                Qt.SolidLine, Qt.RoundCap))
+            # Qt measures arcs in sixteenths of a degree, anticlockwise from 3 o'clock.
+            painter.drawArc(box, -self._angle * 16, -_ARC_SPAN * 16)
+
+            if self._message:
+                painter.setPen(palette.windowText().color())
+                painter.drawText(
+                    self.rect().adjusted(0, _SPINNER_SIZE + 18, 0, 0),
+                    Qt.AlignHCenter | Qt.AlignVCenter,
+                    self._message,
+                )
 
 
 class _Runner(QObject):

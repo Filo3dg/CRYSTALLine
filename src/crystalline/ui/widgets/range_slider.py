@@ -123,44 +123,48 @@ class RangeSlider(QWidget):
     # ── painting ────────────────────────────────────────────────────────
     @guard()
     def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        palette = self.palette()
-        enabled = self.isEnabled()
+        # ``with``, not a bare end() at the bottom: if anything in here
+        # raises, the guard above catches it, and a painter left active
+        # keeps Qt painting on this widget for as long as the report
+        # holds the traceback. Destroying the device then takes the
+        # process down, far from the line that failed.
+        with QPainter(self) as painter:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            palette = self.palette()
+            enabled = self.isEnabled()
 
-        middle = self.height() / 2.0
-        track = QColor(palette.mid().color())
-        selected = QColor(palette.highlight().color())
-        if not enabled:
-            track.setAlpha(90)
-            selected.setAlpha(90)
+            middle = self.height() / 2.0
+            track = QColor(palette.mid().color())
+            selected = QColor(palette.highlight().color())
+            if not enabled:
+                track.setAlpha(90)
+                selected.setAlpha(90)
 
-        path = QPainterPath()
-        path.addRoundedRect(
-            float(_KNOB_RADIUS), middle - _TRACK_HEIGHT / 2.0,
-            float(max(self.width() - 2 * _KNOB_RADIUS, 1)), float(_TRACK_HEIGHT),
-            _TRACK_HEIGHT / 2.0, _TRACK_HEIGHT / 2.0,
-        )
-        painter.fillPath(path, track)
-
-        low_x, high_x = self._x_of(self._low), self._x_of(self._high)
-        span = QPainterPath()
-        span.addRoundedRect(
-            low_x, middle - _TRACK_HEIGHT / 2.0, max(high_x - low_x, 1.0),
-            float(_TRACK_HEIGHT), _TRACK_HEIGHT / 2.0, _TRACK_HEIGHT / 2.0,
-        )
-        painter.fillPath(span, selected)
-
-        knob = QColor(palette.base().color())
-        edge = QColor(palette.mid().color()) if not enabled else selected
-        painter.setBrush(knob)
-        for x in (low_x, high_x):
-            painter.setPen(edge)
-            painter.drawEllipse(
-                x - _KNOB_RADIUS, middle - _KNOB_RADIUS,
-                2.0 * _KNOB_RADIUS, 2.0 * _KNOB_RADIUS,
+            path = QPainterPath()
+            path.addRoundedRect(
+                float(_KNOB_RADIUS), middle - _TRACK_HEIGHT / 2.0,
+                float(max(self.width() - 2 * _KNOB_RADIUS, 1)), float(_TRACK_HEIGHT),
+                _TRACK_HEIGHT / 2.0, _TRACK_HEIGHT / 2.0,
             )
-        painter.end()
+            painter.fillPath(path, track)
+
+            low_x, high_x = self._x_of(self._low), self._x_of(self._high)
+            span = QPainterPath()
+            span.addRoundedRect(
+                low_x, middle - _TRACK_HEIGHT / 2.0, max(high_x - low_x, 1.0),
+                float(_TRACK_HEIGHT), _TRACK_HEIGHT / 2.0, _TRACK_HEIGHT / 2.0,
+            )
+            painter.fillPath(span, selected)
+
+            knob = QColor(palette.base().color())
+            edge = QColor(palette.mid().color()) if not enabled else selected
+            painter.setBrush(knob)
+            for x in (low_x, high_x):
+                painter.setPen(edge)
+                painter.drawEllipse(
+                    x - _KNOB_RADIUS, middle - _KNOB_RADIUS,
+                    2.0 * _KNOB_RADIUS, 2.0 * _KNOB_RADIUS,
+                )
 
 
 __all__ = ["RangeSlider"]

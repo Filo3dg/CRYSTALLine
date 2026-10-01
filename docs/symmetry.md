@@ -21,7 +21,9 @@ the 80 layer groups, but not the 75 rod groups. A 1D structure is therefore
 reported by its repeat length and its formula, and its symmetry elements are
 listed by the point-symmetry analysis below like those of any other structure.
 A deck written for a polymer uses rod group 1, with every atom listed, which is
-always valid.
+always valid. Reducing the symmetry of a polymer is refused for the same reason.
+One-dimensional systems are not otherwise supported; see
+[Not supported yet](index.md#not-supported-yet).
 
 ### Which cell is described
 

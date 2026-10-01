@@ -135,17 +135,18 @@ def axis_icon(base: str, subscript: str, colour: str, font) -> QIcon:
     pixmap = QPixmap(int(width) * ratio, height * ratio)
     pixmap.setDevicePixelRatio(ratio)
     pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.TextAntialiasing, True)
-    painter.setPen(QColor(colour))
-    baseline = big_metrics.ascent()
-    painter.setFont(big)
-    painter.drawText(1, baseline, base)
-    if subscript:
-        painter.setFont(small)
-        painter.drawText(1 + big_metrics.horizontalAdvance(base),
-                         int(baseline + drop), subscript)
-    painter.end()
+    # ``with``, so a failure in here cannot leave Qt painting on a pixmap that
+    # is then destroyed — which does not raise, it kills the process later.
+    with QPainter(pixmap) as painter:
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        painter.setPen(QColor(colour))
+        baseline = big_metrics.ascent()
+        painter.setFont(big)
+        painter.drawText(1, baseline, base)
+        if subscript:
+            painter.setFont(small)
+            painter.drawText(1 + big_metrics.horizontalAdvance(base),
+                             int(baseline + drop), subscript)
     return QIcon(pixmap)
 
 
@@ -389,6 +390,19 @@ def refresh_appearance_button(window) -> None:
 
 
 # ── View ──────────────────────────────────────────────────────────────────
+def sync_panel_actions(window) -> None:
+    """Tick each View ▸ Panels entry according to whether its panel is showing.
+
+    ``isHidden`` rather than ``isVisible``: a tabbed panel whose tab is not the
+    selected one is not visible, but it has not been put away and its entry must
+    stay ticked.
+    """
+    for title, dock in window._panel_docks():
+        action = window._panel_actions.get(title)
+        if action is not None:
+            action.setChecked(not dock.isHidden())
+
+
 def _build_view_menu(window) -> None:
     """A 'View' menu: show the display panel and align the view to an axis."""
     view_menu = window.menuBar().addMenu("&View")
@@ -415,16 +429,30 @@ def _build_view_menu(window) -> None:
     display_action.triggered.connect(window._show_display_panel)
     view_menu.addAction(display_action)
 
-    # Docks close with a × and, without these, stay closed for good. Qt's own
-    # toggleViewAction shows/hides and stays checked in step with the dock, even
-    # when it is closed by its own button rather than from here.
+    # The panels are put away and brought back from here, and only from here:
+    # the docks are fixed in place and carry no × of their own, by design
+    # (``MainWindow._dock``).
+    #
+    # Qt's own ``toggleViewAction`` would be the obvious thing to use, and was
+    # used here, but a dock with ``NoDockWidgetFeatures`` is not closable and Qt
+    # disables that action to match — so every entry in this submenu was greyed
+    # out and no panel could be hidden at all. These are ordinary checkable
+    # actions instead.
     panels_menu = view_menu.addMenu("Panels")
     window._panel_actions = {}
     for title, dock in window._panel_docks():
-        action = dock.toggleViewAction()
-        action.setText(title)
+        action = QAction(title, window)
+        action.setCheckable(True)
+        action.setChecked(not dock.isHidden())
+        action.triggered.connect(lambda checked, d=dock: d.setVisible(checked))
         panels_menu.addAction(action)
         window._panel_actions[title] = action
+    # Docks are shown and hidden from elsewhere too — a new plot reveals the
+    # Plots panel, Restore all brings everything back — so the ticks are brought
+    # up to date when the menu opens. A dock's own ``visibilityChanged`` cannot
+    # do it: for the tabbed panels on the left it fires whenever another tab is
+    # selected, which would untick a panel that is still perfectly well there.
+    panels_menu.aboutToShow.connect(lambda: sync_panel_actions(window))
     panels_menu.addSeparator()
     restore_all = QAction("Restore all panels", window)
     restore_all.triggered.connect(window._restore_all_panels)

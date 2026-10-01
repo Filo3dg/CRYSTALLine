@@ -252,7 +252,7 @@ def test_speed_scales_the_phase_advanced_per_frame(qapp):
     panel.set_modes(structure.positions, _labelled_modes())
 
     panel._tick()
-    assert np.isclose(panel._phase, pp._PHASE_STEP)  # 1.0x default
+    assert np.isclose(panel._phase, pp._START_PHASE + pp._PHASE_STEP)  # 1.0x default
 
     panel._phase = 0.0
     panel.speed_box.setValue(2.5)
@@ -264,6 +264,8 @@ def test_speed_scales_the_phase_advanced_per_frame(qapp):
 
 
 def test_phase_wraps_and_stop_returns_to_rest(qapp):
+    from crystalline.ui.panels import phonon_panel as pp
+
     structure = _structure()
     panel = _panel(structure)
     panel.set_modes(structure.positions, _labelled_modes())
@@ -274,7 +276,10 @@ def test_phase_wraps_and_stop_returns_to_rest(qapp):
     assert 0.0 <= panel._phase < 2 * np.pi  # never runs off
 
     panel._stop()
-    assert panel._phase == 0.0  # next Play starts from rest, not mid-cycle
+    # Back to where the cycle is parked, which is a quarter of the way in: the
+    # displacement is a cosine, so that is the phase at which a Gamma mode sits
+    # at its equilibrium and the next Play can ease out of it.
+    assert panel._phase == pp._START_PHASE
 
 
 def test_transport_buttons_are_icons_at_the_top(qapp):
@@ -645,3 +650,60 @@ def test_a_repeated_hold_still_releases(qapp):
     panel.hold(True)
     panel.hold(False)
     assert panel._timer.isActive()
+
+
+def test_picking_a_mode_leaves_the_geometry_where_it_is(qapp):
+    """Selecting a mode from the list is a choice about what to animate, not a
+    displacement of the structure. A displacement is ``Re[e exp(-i*phase)]``, so
+    phase 0 is full stretch and parking the cycle there moved every atom the
+    moment a different row was clicked."""
+    from crystalline.ui.panels import phonon_panel as pp
+
+    structure = _structure()
+    panel = _panel(structure)
+    panel.set_modes(structure.positions, _labelled_modes(), structure.numbers)
+    renderer = panel._animator.renderer
+
+    def displacement():
+        drawn = np.array([renderer.rendered_atom_position(i) for i in range(len(structure))])
+        return np.abs(drawn - np.asarray(structure.positions)).max()
+
+    panel.select_mode(2)
+    assert displacement() == pytest.approx(0.0, abs=1e-9)
+    panel.select_mode(3)
+    assert displacement() == pytest.approx(0.0, abs=1e-9)
+    assert panel._phase == pp._START_PHASE
+
+
+def test_play_eases_out_of_the_equilibrium(qapp):
+    """...and the same parking makes the first frame of Play a small step rather
+    than a jump to the far end of the swing."""
+    structure = _structure()
+    panel = _panel(structure)
+    panel.set_modes(structure.positions, _labelled_modes(), structure.numbers)
+    renderer = panel._animator.renderer
+    panel.select_mode(1)
+
+    panel._play()
+    first = []
+    for _ in range(3):
+        panel._tick()
+        drawn = np.array([renderer.rendered_atom_position(i) for i in range(len(structure))])
+        first.append(np.abs(drawn - np.asarray(structure.positions)).max())
+
+    assert first[0] < 0.2 * panel._animator.amplitude   # a step, not a snap
+    assert first[0] < first[1] < first[2]               # and growing
+
+
+def test_the_still_arrows_are_unaffected_by_where_the_cycle_is_parked(qapp):
+    """The arrow field is drawn at an explicit phase 0 — ``Re(e)``, CRYSTAL's
+    IN-PHASE block — and must stay there. Putting the quarter cycle inside the
+    displacement instead of here would leave a Gamma mode with no arrows."""
+    structure = _structure()
+    panel = _panel(structure)
+    modes = _labelled_modes()
+    panel.set_modes(structure.positions, modes, structure.numbers)
+
+    panel.select_mode(0)
+
+    assert np.allclose(panel._animator.renderer._mode_vectors, modes[0].eigenvector)

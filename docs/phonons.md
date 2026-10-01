@@ -18,6 +18,11 @@ The **Amplitude** is defined as the largest displacement of any atom, so that
 one value is appropriate for structures of different size, and the **Speed**
 sets the rate of the animation.
 
+A mode gives one displacement per atom, so it describes the structure the
+calculation was run on and no other. Moving an atom or changing its element
+leaves the modes in place, but adding or deleting one sets them aside and the
+panel says so; undoing that edit brings them back.
+
 ```{image} mode-mof5.gif
 :alt: The linkers of MOF-5 twisting in a low-frequency mode
 :width: 340px
