@@ -41,15 +41,14 @@ class PhononAnimator:
         self._mode = mode
         self.renderer.set_bond_reference(self._equilibrium)
         # Show the mode as an arrow field too: the animation reads well on screen,
-        # the arrows are what survives into a still image. Drawn at the quarter
-        # cycle, where a Gamma mode is at full stretch — for a mode away from
-        # Gamma that is one snapshot of a travelling wave (an atom whose motion
-        # is elliptical is caught mid-ellipse), which is what a still frame of
-        # such a mode can honestly be.
+        # the arrows are what survives into a still image. Drawn at phase 0,
+        # where a Gamma mode is at full stretch and a mode away from Gamma is
+        # ``Re(e)`` — CRYSTAL's own IN-PHASE block, so the still picture here and
+        # the one beside the frequency table are the same instant of the mode.
         # The Bloch phase rides along: it is what tells the arrows of one cell
         # from the next when the mode is a travelling wave.
         self.renderer.set_mode_vectors(
-            frame_displacement(mode.eigenvector, np.pi / 2.0), phases=mode.cell_phase
+            frame_displacement(mode.eigenvector, 0.0), phases=mode.cell_phase
         )
 
     def clear_mode(self) -> None:

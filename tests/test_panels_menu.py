@@ -14,7 +14,12 @@ pytest.importorskip("PySide6")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDockWidget, QMainWindow  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDockWidget,
+    QMainWindow,
+    QWidget,
+)
 
 from crystalline.ui import menus  # noqa: E402
 from crystalline.ui.main_window import MainWindow  # noqa: E402
@@ -35,18 +40,23 @@ def qapp():
 
 
 class _StubWindow(QMainWindow):
-    """The dock bookkeeping the View menu needs, without VTK."""
+    """The dock bookkeeping the View menu needs, without VTK.
+
+    The docks are built with the window's own ``_dock``, not with a bare
+    ``QDockWidget``: the features it sets are the whole reason this menu needs
+    care. Built loosely here, this harness passed while every entry in the real
+    menu was greyed out.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self._axis_actions = []
         self.viewport = None
         for name, area in _DOCKS:
-            dock = QDockWidget(name, self)
-            self.addDockWidget(area, dock)
-            setattr(self, name, dock)
+            setattr(self, name, self._dock(name, QWidget(self), area))
         self._plot_dock.hide()  # as the real window starts
 
+    _dock = MainWindow._dock
     _panel_docks = MainWindow._panel_docks
     _restore_all_panels = MainWindow._restore_all_panels
     _show_display_panel = MainWindow._show_display_panel
@@ -67,18 +77,50 @@ def test_every_panel_has_a_menu_entry(qapp):
     assert all(action.isCheckable() for action in window._panel_actions.values())
 
 
-def test_a_panel_closed_with_its_button_can_be_reopened(qapp):
-    """The case this exists for: the × is easy to hit by accident."""
+def test_a_panel_can_be_put_away_and_brought_back(qapp):
+    """What the entries are for. The docks carry no × of their own, so if these
+    do not work a panel cannot be put away at all — which is what happened:
+    Qt disables ``toggleViewAction`` for a dock that is not closable, so every
+    entry here was greyed out."""
     window = _window(qapp)
     action = window._panel_actions["Geometry"]
 
-    window._geometry_dock.close()
-    assert window._geometry_dock.isHidden()
-    assert not action.isChecked()  # the menu tracks the dock, however it was closed
-
-    action.trigger()
-    assert not window._geometry_dock.isHidden()
+    assert action.isEnabled(), "the entry is greyed out; no panel can be hidden"
     assert action.isChecked()
+
+    action.trigger()                       # as clicking a ticked entry does
+    assert not action.isChecked()
+    assert window._geometry_dock.isHidden()
+
+    action.trigger()                       # and clicking it again brings it back
+    assert action.isChecked()
+    assert not window._geometry_dock.isHidden()
+
+
+def test_the_panels_have_no_close_button_of_their_own(qapp):
+    """The menu is the only route, deliberately: a dock shut by accident or
+    dragged out of place was work to get back."""
+    window = _window(qapp)
+
+    for _title, dock in window._panel_docks():
+        assert dock.features() == QDockWidget.NoDockWidgetFeatures
+
+
+def test_the_ticks_catch_up_with_panels_shown_from_elsewhere(qapp):
+    """A plot arriving reveals the Plots panel, and Restore all brings
+    everything back. The entries are brought up to date when the menu opens,
+    not tracked signal by signal — a tabbed dock reports itself invisible
+    whenever another tab is selected, which would untick a panel that is
+    perfectly well there."""
+    window = _window(qapp)
+    assert not window._panel_actions["Plots"].isChecked()  # starts hidden
+
+    window._plot_dock.show()
+    window._info_dock.hide()
+    menus.sync_panel_actions(window)
+
+    assert window._panel_actions["Plots"].isChecked()
+    assert not window._panel_actions["Info"].isChecked()
 
 
 def test_restore_all_brings_back_every_closed_panel(qapp):

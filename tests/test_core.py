@@ -146,11 +146,11 @@ def test_displaced_positions_at_key_phases():
     evec = np.array([[0.0, 1.0, 0.0], [0.0, -1.0, 0.0]])
     mode = PhononMode(frequency=50.0, eigenvector=evec)
 
-    # phase 0 -> sin(0)=0 -> equilibrium
-    assert np.allclose(displaced_positions(eq, mode, amplitude=1.0, phase=0.0), eq)
-    # phase pi/2 -> sin=1 -> full displacement
-    peak = displaced_positions(eq, mode, amplitude=0.5, phase=np.pi / 2)
+    # phase 0 -> cos(0)=1 -> full displacement
+    peak = displaced_positions(eq, mode, amplitude=0.5, phase=0.0)
     assert np.allclose(peak, eq + 0.5 * evec)
+    # a quarter cycle on -> cos=0 -> passing through the equilibrium
+    assert np.allclose(displaced_positions(eq, mode, amplitude=1.0, phase=np.pi / 2), eq)
 
 
 def test_amplitude_is_the_peak_atomic_displacement_whatever_the_cell_size():
@@ -164,7 +164,7 @@ def test_amplitude_is_the_peak_atomic_displacement_whatever_the_cell_size():
         evec[:, 0] = 1.0
         evec /= np.linalg.norm(evec)  # as CRYSTALClear normalises it
 
-        peak = displaced_positions(eq, PhononMode(100.0, evec), amplitude=0.4, phase=np.pi / 2)
+        peak = displaced_positions(eq, PhononMode(100.0, evec), amplitude=0.4, phase=0.0)
         assert np.isclose(np.max(np.linalg.norm(peak - eq, axis=1)), 0.4)
 
 
@@ -172,14 +172,14 @@ def test_amplitude_keeps_the_relative_motion_within_a_mode():
     # One atom moving twice as far as another must still do so after scaling.
     eq = np.zeros((3, 3))
     evec = np.array([[2.0, 0, 0], [1.0, 0, 0], [0.0, 0, 0]])
-    peak = displaced_positions(eq, PhononMode(100.0, evec), amplitude=0.5, phase=np.pi / 2)
+    peak = displaced_positions(eq, PhononMode(100.0, evec), amplitude=0.5, phase=0.0)
     assert np.allclose(peak[:, 0], [0.5, 0.25, 0.0])
 
 
 def test_a_null_eigenvector_does_not_move_or_blow_up():
     eq = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
     mode = PhononMode(frequency=0.0, eigenvector=np.zeros((2, 3)))
-    assert np.allclose(displaced_positions(eq, mode, amplitude=1.0, phase=np.pi / 2), eq)
+    assert np.allclose(displaced_positions(eq, mode, amplitude=1.0, phase=0.0), eq)
 
 
 def test_activity_labels_ride_along_with_the_mode():
@@ -250,13 +250,53 @@ def test_a_complex_mode_moves_as_a_wave_over_the_cycle():
     at_zero = displaced_positions(eq, mode, amplitude=1.0, phase=0.0)
     quarter = displaced_positions(eq, mode, amplitude=1.0, phase=np.pi / 2)
 
-    # phase 0: the real atom is at rest, the imaginary one at full stretch
-    assert np.allclose(at_zero[0], [0.0, 0, 0]) and np.allclose(at_zero[1], [1.0, 0, 0])
+    # phase 0: Re[e] — the real atom at full stretch, the imaginary one at rest
+    assert np.allclose(at_zero[0], [1.0, 0, 0]) and np.allclose(at_zero[1], [0.0, 0, 0])
     # a quarter cycle later they have swapped roles
-    assert np.allclose(quarter[0], [1.0, 0, 0]) and np.allclose(quarter[1], [0.0, 0, 0])
-    # a real eigenvector still moves as e*sin(phase) — the Gamma animation is unchanged
+    assert np.allclose(quarter[0], [0.0, 0, 0]) and np.allclose(quarter[1], [1.0, 0, 0])
+    # a real (Gamma) eigenvector moves as e*cos(phase)
     real = PhononMode(frequency=100.0, eigenvector=np.real(evec))
-    assert np.allclose(frame_displacement(real.eigenvector, 0.3), np.real(evec) * np.sin(0.3))
+    assert np.allclose(frame_displacement(real.eigenvector, 0.3), np.real(evec) * np.cos(0.3))
+
+
+def test_the_wave_travels_along_plus_q():
+    """The pattern of a travelling wave moves the way the mode's q says it does.
+
+    The displacement is ``Re[e exp(i(2 pi q·n - w t))]``, so as time runs the
+    pattern advances along +q, by one wavelength per cycle. Evaluating the
+    *imaginary* part instead flips the sign of the time term and runs the wave
+    backwards — which is what this code did, invisibly, because at Gamma the two
+    agree exactly and nothing away from Gamma ever looked at the direction.
+
+    Checked as a shift of the whole field rather than by chasing one crest: a
+    crest that leaves one end of the sampled range and re-enters at the other
+    says nothing about which way it went.
+    """
+    q = 0.25                                  # wavelength: four cells
+    per_cell = 100
+    n = np.arange(0, 8 * per_cell + 1) / per_cell
+    evec = np.zeros((n.size, 3), complex)
+    evec[:, 2] = np.exp(2j * np.pi * q * n)   # a real mode, Bloch phase folded in
+
+    now = frame_displacement(evec, 0.2)[:, 2]
+    later = frame_displacement(evec, 0.2 + np.pi / 2)[:, 2]  # a quarter cycle on
+
+    # A quarter cycle later the field is the same shape, moved one cell along +n.
+    assert np.allclose(later[per_cell:], now[:-per_cell], atol=1e-9)
+    # ...and emphatically not one cell back the other way.
+    assert not np.allclose(later[:-per_cell], now[per_cell:], atol=1e-3)
+    # A whole cycle is the same picture again — it has moved one wavelength on.
+    assert np.allclose(frame_displacement(evec, 0.2 + 2 * np.pi)[:, 2], now)
+
+
+def test_a_still_picture_of_a_mode_shows_the_in_phase_block():
+    """The arrow field is drawn at phase 0 (``viz.phonon_animator``).
+    There it must come out as Re(e) — what CRYSTAL prints as MODES IN PHASE —
+    and not as the anti-phase block, which is a quarter cycle away from what the
+    frequency table's own companion picture shows."""
+    evec = np.array([[0.3 + 0.4j, 0.0, 0.0], [-0.1 + 0.2j, 0.0, 0.0]])
+
+    assert np.allclose(frame_displacement(evec, 0.0), np.real(evec))
 
 
 def test_amplitude_still_means_the_peak_atomic_displacement_when_complex():
@@ -305,3 +345,65 @@ def test_phonon_modes_report_the_qpoint_they_share():
     )
     assert not away.is_gamma and away.qpoint_label == "(0, 1/2, 0)"
     assert PhononModes([]).is_gamma  # no modes: nothing to be away from Gamma
+
+
+# ── the middle of a structure that is not a crystal ─────────────────────
+
+def _crystal_slab_polymer():
+    """One of each periodicity, with CRYSTAL's formal 500 Å across the vacuum."""
+    from ase import Atoms
+    from ase.build import bulk, fcc111
+
+    crystal = Structure.from_ase(bulk("MgO", "rocksalt", a=4.21))
+
+    slab = fcc111("Pt", size=(2, 2, 3), vacuum=0.0)
+    cell = np.asarray(slab.get_cell(), dtype=float)
+    cell[2] = [0.0, 0.0, 500.0]
+    slab.set_cell(cell)
+    slab.pbc = [True, True, False]
+
+    chain = Atoms(
+        "OMg", positions=[[1.7835, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        cell=[[3.567, 0, 0], [0, 500.0, 0], [0, 0, 500.0]],
+        pbc=[True, False, False],
+    )
+    return crystal, Structure.from_ase(slab), Structure.from_ase(chain)
+
+
+def test_the_middle_of_a_slab_or_a_polymer_is_not_the_middle_of_its_cell():
+    """Where a new atom is put. Half of CRYSTAL's 500 Å is 250 Å of vacuum: an
+    atom added there is added, and selected, where nothing can be seen or
+    picked, which reads as not being added at all."""
+    _crystal, slab, polymer = _crystal_slab_polymer()
+
+    for structure in (slab, polymer):
+        centre = structure.centre()
+        atoms = np.asarray(structure.positions)
+        aperiodic = ~np.asarray(structure.pbc, dtype=bool)
+        # No component of it is out in the vacuum...
+        assert np.all(np.abs(centre[aperiodic]) < 20.0)
+        # ...and it lands among the atoms rather than a quarter of a micron off.
+        assert np.linalg.norm(centre - atoms.mean(axis=0)) < 5.0
+
+    # Along the directions that do repeat it is still the middle of the cell.
+    assert slab.centre()[:2] == pytest.approx(0.5 * np.asarray(slab.cell)[:2].sum(axis=0)[:2])
+    assert polymer.centre()[0] == pytest.approx(0.5 * np.asarray(polymer.cell)[0][0])
+
+
+def test_the_middle_of_a_crystal_is_the_centre_of_its_cell():
+    """The 3D case is what it always was, and must not move."""
+    crystal, _slab, _polymer = _crystal_slab_polymer()
+
+    assert crystal.centre() == pytest.approx(0.5 * np.asarray(crystal.cell).sum(axis=0))
+
+
+def test_the_middle_of_a_molecule_is_its_centroid():
+    """No direction repeats, so there is no cell to take the middle of — and an
+    imported molecule sitting far from the origin must not send the atom back
+    to it."""
+    s = Structure.empty()
+    s.add_atom("C", [10.0, 10.0, 10.0])
+    s.add_atom("O", [12.0, 10.0, 10.0])
+
+    assert s.centre() == pytest.approx([11.0, 10.0, 10.0])
+    assert Structure.empty().centre() == pytest.approx([0.0, 0.0, 0.0])

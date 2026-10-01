@@ -498,3 +498,177 @@ def test_qpoints_that_do_not_line_up_with_the_modes_are_dropped():
 
     assert _sampled_qpoints(out, 3)[1] is not None  # three headers, three sets
     assert _sampled_qpoints(out, 5) == [None] * 5  # five sets: not this run's q
+
+
+def test_an_output_whose_modes_cannot_be_read_still_opens(monkeypatch, tmp_path):
+    """The geometry is not lost with the frequencies.
+
+    Reading modes goes through CRYSTALClear's eigenvector parser, which gives
+    up on an output carrying anything it does not expect — the extra output of
+    a patched CRYSTAL, a job script's own listing. That used to take the whole
+    file down: the structure was there to be read, and the window showed an
+    error instead of it.
+    """
+    from ase.build import bulk
+
+    from crystalline.crystalio import loader
+    from crystalline.core.structure import Structure
+
+    output = tmp_path / "run.out"
+    output.write_text("not read: every step below is stubbed\n")
+    geometry = Structure.from_ase(bulk("MgO", "rocksalt", a=4.21))
+
+    monkeypatch.setattr(loader, "has_phonons", lambda _path: True)
+    monkeypatch.setattr(loader, "load_structure",
+                        lambda _path, initial=False: geometry)
+
+    def explode(_path, **_kwargs):
+        raise ValueError("inhomogeneous shape after 1 dimensions")
+
+    monkeypatch.setattr(loader, "load_dispersion", explode)
+
+    result = loader.load(str(output))
+
+    assert result.structure is geometry        # the structure came through
+    assert result.modes is None
+    assert result.qpoints == []
+    assert result.note and "could not be read" in result.note
+    assert "inhomogeneous" in result.note      # and it says what went wrong
+
+
+# One eigenvector block as CRYSTAL prints it: the frequencies, then a row per
+# axis per atom. The blank line after the last row is what tells a reader the
+# block has ended — the point of the two tests below.
+_EIGENVECTOR_BLOCK = """
+ FREQ(CM**-1)     48.10     48.10    188.99
+
+ AT.   1 O  X     0.0000    0.0000   -0.0000
+            Y     0.0000   -0.0010    0.0001
+            Z     0.0006   -0.0019   -0.0002
+ AT.   2 MG X    -0.0000   -0.0000   -0.0000
+            Y     0.0848    0.0745   -0.1091
+            Z    -0.0746    0.0841    0.0812
+"""
+
+
+def test_a_well_formed_eigenvector_block_is_left_alone():
+    """Nothing is repaired in an output CRYSTAL wrote on its own."""
+    from crystalline.crystalio.loader import _repair_eigenvector_blocks
+
+    data = (_EIGENVECTOR_BLOCK + "\n VIBRATIONAL TEMPERATURES (K)\n").splitlines(True)
+    original = list(data)
+
+    assert _repair_eigenvector_blocks(data) == 0
+    assert data == original
+
+
+def test_lines_glued_to_an_eigenvector_block_are_blanked():
+    """A foreign line touching the last row is read as another row of it.
+
+    Its numbers do not count out to the block's modes, so the whole frequency
+    section fails on the mismatched shape. The lines are blanked instead — and
+    only they: the numbering the caller parses against has to survive, and so
+    do the rows themselves.
+    """
+    from crystalline.crystalio.loader import _repair_eigenvector_blocks
+
+    debug = " *** metroFRA_disp ***\n xa_g -7.7669E-07  2.5775E-05\n"
+    data = (_EIGENVECTOR_BLOCK.rstrip("\n") + "\n" + debug + "\n MORE CRYSTAL OUTPUT\n")
+    data = data.splitlines(True)
+    rows = [line for line in data if " AT. " in line or line[:13].strip() in ("Y", "Z")]
+    length = len(data)
+
+    assert _repair_eigenvector_blocks(data) == 2  # the two foreign lines, no more
+    assert len(data) == length  # blanked, not removed: the numbering has to hold
+    assert [line for line in data if " AT. " in line or line[:13].strip() in ("Y", "Z")] == rows
+    assert data[-1] == " MORE CRYSTAL OUTPUT\n"  # what came after the blank line
+    last_row = max(i for i, line in enumerate(data) if line in rows)
+    assert data[last_row + 1].strip() == ""  # the block ends where its rows end
+
+
+def test_a_qpoint_header_is_never_blanked():
+    """Whatever else a block ran into, the next q-point has to stay readable."""
+    from crystalline.crystalio.loader import _repair_eigenvector_blocks
+
+    header = "  DISPERSION K POINT NUMBER     2 COORD:  C(  1  0  0 )    WEIGHT:    1.\n"
+    data = (_EIGENVECTOR_BLOCK.rstrip("\n") + "\n" + header).splitlines(True)
+
+    assert _repair_eigenvector_blocks(data) == 0
+    assert data[-1] == header
+
+
+def test_lines_landing_inside_a_block_leave_its_rows_together():
+    """Text written into the middle of a block cuts the rows after it adrift.
+
+    The reader stops at the first line that is not a row, so those rows are lost
+    from the block and its eigenvectors come out short — the same failure as
+    text glued to the end, further from its cause. They are gathered back here.
+    """
+    from crystalline.crystalio.loader import _repair_eigenvector_blocks
+
+    block = _EIGENVECTOR_BLOCK.rstrip("\n").splitlines(True)
+    interruption = [" Sono dentro scanpes\n"] * 3
+    data = block[:-2] + interruption + block[-2:] + ["\n"]
+    length = len(data)
+
+    assert _repair_eigenvector_blocks(data) == 3
+    assert len(data) == length
+    rows = [line for line in data if line.strip()][1:]  # past the FREQ header
+    assert len(rows) == 6  # two atoms, three axes: every row of the block
+    assert rows == [line for line in block if " AT. " in line or line[:13].strip() in ("Y", "Z")]
+    assert all(line.strip() == "" for line in data[-4:])  # the block ends after them
+
+
+# ── the vacuum CRYSTAL writes across a slab or a chain ──────────────────
+
+def _chain(y_of_second_atom):
+    """A two-atom MgO chain along a, with 500 Å of formal vacuum across it."""
+    from ase import Atoms
+
+    return Atoms(
+        "OMg",
+        cell=[[3.567, 0, 0], [0, 500.0, 0], [0, 0, 500.0]],
+        scaled_positions=[[0.5, 2.7e-08, 0.0], [1.1e-07, y_of_second_atom, 0.0]],
+        pbc=(True, False, False),
+    )
+
+
+def test_an_atom_wrapped_across_the_formal_vacuum_comes_back():
+    """pymatgen wraps fractional coordinates; CRYSTAL's 500 Å has no other image.
+
+    An atom a hair below the origin comes back at 0.99999997, which against a
+    formal 500 Å cell vector puts it half a kilometre from the chain. Along a
+    real lattice vector the same wrap would be a different image of the same
+    atom and would mean nothing.
+    """
+    from crystalline.crystalio.loader import _unwrap_aperiodic
+
+    wrapped = _unwrap_aperiodic(_chain(0.999999973))
+
+    assert wrapped.get_positions()[1][1] == pytest.approx(-1.36e-05, abs=1e-7)
+    # The Mg ends up where the chain is: one half of a = 3.567 from the O.
+    assert wrapped.get_distance(0, 1) == pytest.approx(3.567 / 2, abs=1e-4)
+
+
+def test_coordinates_that_were_not_wrapped_are_left_exactly_alone():
+    """The unwrap runs on every output read, so it has to be a no-op otherwise."""
+    from crystalline.crystalio.loader import _unwrap_aperiodic
+
+    chain = _chain(-2.7e-08)
+    before = chain.get_positions().copy()
+
+    assert np.array_equal(_unwrap_aperiodic(chain).get_positions(), before)
+
+
+def test_a_periodic_axis_is_never_unwrapped():
+    """Along a real lattice vector, which image an atom is given is immaterial —
+    and rewinding one would move it out of the cell it was reported in."""
+    from ase.build import bulk
+
+    from crystalline.crystalio.loader import _unwrap_aperiodic
+
+    crystal = bulk("MgO", "rocksalt", a=4.21)
+    crystal.set_scaled_positions([[0.0, 0.0, 0.0], [0.99, 0.5, 0.5]])
+    before = crystal.get_positions().copy()
+
+    assert np.array_equal(_unwrap_aperiodic(crystal).get_positions(), before)

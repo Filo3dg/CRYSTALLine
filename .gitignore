@@ -26,3 +26,6 @@ site/
 
 # Files the Claude desktop app saves into the folder (screenshots, exports)
 Claude outputs/
+
+# Generated at build time from the GitHub releases (docs/conf.py).
+docs/release-notes.md

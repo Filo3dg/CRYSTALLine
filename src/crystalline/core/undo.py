@@ -55,6 +55,25 @@ class UndoHistory:
         self._baseline = snapshot
         self._redo = []
 
+    def rebase(self, snapshot: Any) -> None:
+        """Make ``snapshot`` the current state without adding a step.
+
+        For a change that should not be undoable in itself, but which the steps
+        recorded after it have to be measured against. The past stays where it
+        is: only the baseline moves.
+        """
+        self._baseline = snapshot
+
+    @property
+    def baseline(self) -> Optional[Any]:
+        """The state as of the last :meth:`record`, :meth:`undo` or :meth:`reset`.
+
+        Exposed so a caller can tell a real change from a rebuild that produced
+        the state already held, and skip recording an undo step that would put
+        nothing back.
+        """
+        return self._baseline
+
     def can_undo(self) -> bool:
         return bool(self._stack)
 

@@ -172,6 +172,7 @@ def test_an_absurd_delta_cannot_teleport_the_view():
 def test_switching_cell_view_redraws_and_is_a_no_op_when_unchanged():
     pytest.importorskip("PySide6")
     from crystalline.core.cells import CellView
+    from crystalline.core.undo import UndoHistory
     from crystalline.ui.main_window import MainWindow
 
     rebuilt = []
@@ -183,10 +184,19 @@ def test_switching_cell_view_redraws_and_is_a_no_op_when_unchanged():
         def _apply_cell_view(self):
             rebuilt.append(True)
 
+        def _snapshot(self):
+            return None
+
+        def _update_undo_action(self):
+            pass
+
     window = _StubWindow()
     window._cell_view = CellView.CRYSTALLOGRAPHIC
     window._cell_view_actions = {}
     window._cell_view_buttons = {}
+    window._shown_edited = False   # switching with nothing pending is no undo step
+    window._suppress_undo = False
+    window._history = UndoHistory()
 
     window._set_cell_view(CellView.CRYSTALLOGRAPHIC)   # already there
     assert rebuilt == []
