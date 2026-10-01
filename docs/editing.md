@@ -68,7 +68,10 @@ open stay open in every tab and the next time the program is started.
 | 4 | a dihedral angle |
 
 Measurements remain drawn in the view and can be coloured individually or by
-type. A plane through the selected atoms is fitted under **Lattice planes**.
+type. The **Thickness** slider sets how thick the lines of distances, angles and
+dihedrals are drawn, in Å: those selected in the list, all of them when none is
+selected, and the ones measured next. A plane through the selected atoms is
+fitted under **Lattice planes**.
 
 ## Lattice planes
 

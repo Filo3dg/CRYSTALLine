@@ -263,6 +263,28 @@ def test_measurement_colours_come_from_settings():
     assert np.allclose(line_actor.GetProperty().GetColor(), (1.0, 0.0, 0.0), atol=1e-3)
 
 
+def test_a_measurement_line_is_drawn_as_thick_as_it_says():
+    import dataclasses
+
+    from crystalline.core import measure as measure_mod
+
+    water = Structure.empty()
+    water.add_atom("O", [0.0, 0.0, 0.0])
+    water.add_atom("H", [0.96, 0.0, 0.0])
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(water)
+    distance = measure_mod.measure(water.positions, water.symbols, [0, 1])
+
+    def drawn_thickness():
+        tube = renderer._annotation_actors[0].GetMapper().GetInput()
+        return np.ptp(np.array(tube.GetBounds()).reshape(3, 2)[1:], axis=1).max()
+
+    renderer.set_annotations([distance])
+    assert drawn_thickness() == pytest.approx(measure_mod.DEFAULT_THICKNESS, rel=0.05)
+    renderer.set_annotations([dataclasses.replace(distance, thickness=0.4)])
+    assert drawn_thickness() == pytest.approx(0.4, rel=0.05)
+
+
 def test_per_item_measurement_colour_overrides_the_group_default():
     import dataclasses
 

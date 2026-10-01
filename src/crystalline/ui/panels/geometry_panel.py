@@ -5,7 +5,8 @@ under its header, as the Display panel's do; which are open is remembered:
 
 * **Measure** — turn the current 3D selection into a position (1 atom), a
   distance (2), an angle (3) or a dihedral (4), keep a list of them, and draw
-  the ones that are ticked over the structure as points and lines.
+  the ones that are ticked over the structure as points and lines, each line
+  in its own colour and thickness.
 * **Lattice planes** — draw a crystallographic plane, or its whole family,
   from its Miller indices: placed at a typed position along the normal or
   through the selected atom, with d(hkl) and the atoms lying on it. Or fit a
@@ -86,6 +87,10 @@ _PLANE_COLORS = ("#e6550d", "#3182bd", "#31a354", "#756bb1", "#d6616b", "#8c6d31
 _LIST_HINT_HEIGHT = 96
 # The opacity box, as wide as the value boxes of the Display panel.
 _OPACITY_BOX_WIDTH = 66
+# The range of a measurement line's thickness (Å): from a hairline to about four
+# times a bond at the Display panel's default radius (0.06 Å, so 0.12 Å thick).
+_THICKNESS_MIN = 0.02
+_THICKNESS_MAX = 0.50
 # The panel's sections: the key each is remembered under, and its header.
 _SECTIONS = (("measure", "Measure"), ("planes", "Lattice planes"), ("atoms", "Atoms"))
 
@@ -236,6 +241,35 @@ class GeometryPanel(QWidget):
         box.addLayout(row)
         # The colour button follows the list selection, not just "any measurement".
         self._list.itemSelectionChanged.connect(self._sync_buttons)
+        self._list.itemSelectionChanged.connect(self._show_selected_thickness)
+
+        # How thick the lines are: the default reads well on a small cell and
+        # vanishes on a big supercell seen whole. Works like the planes' opacity
+        # below — on the measurements selected, else on all, and on the next.
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Thickness (Å)"))
+        tip = ("How thick the lines of distances, angles and dihedrals are drawn: those "
+               "selected in the list — all of them when none is selected — and the ones "
+               "measured next")
+        self._thickness_slider = QSlider(Qt.Horizontal)
+        self._thickness_slider.setRange(int(round(_THICKNESS_MIN * 100)),
+                                        int(round(_THICKNESS_MAX * 100)))
+        self._thickness_slider.setValue(int(round(measure_mod.DEFAULT_THICKNESS * 100)))
+        self._thickness_slider.setToolTip(tip)
+        self._thickness_slider.valueChanged.connect(
+            lambda value: self._set_measurement_thickness(value / 100.0)
+        )
+        row.addWidget(self._thickness_slider, 1)
+        self._thickness_box = QDoubleSpinBox()
+        self._thickness_box.setRange(_THICKNESS_MIN, _THICKNESS_MAX)
+        self._thickness_box.setSingleStep(0.01)
+        self._thickness_box.setDecimals(2)
+        self._thickness_box.setValue(measure_mod.DEFAULT_THICKNESS)
+        self._thickness_box.setToolTip(tip)
+        self._thickness_box.setFixedWidth(_OPACITY_BOX_WIDTH)
+        self._thickness_box.valueChanged.connect(self._set_measurement_thickness)
+        row.addWidget(self._thickness_box)
+        box.addLayout(row)
         return group
 
     def _build_planes_group(self) -> QWidget:
@@ -623,6 +657,7 @@ class GeometryPanel(QWidget):
     def _add_measurement(self, result) -> None:
         if result is None:
             return
+        result = dataclasses.replace(result, thickness=self.measurement_thickness())
         self._measurements.append(result)
         item = QListWidgetItem(result.summary())
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
@@ -648,6 +683,36 @@ class GeometryPanel(QWidget):
             )
             self._list.item(row).setIcon(_colour_swatch(hex_color))
         self._emit_annotations()
+
+    def measurement_thickness(self) -> float:
+        """The thickness shown (Å) — what the next measurement is drawn with."""
+        return float(self._thickness_box.value())
+
+    def _show_thickness(self, value: float) -> None:
+        """Put ``value`` in the slider and the box without it counting as a change."""
+        for widget, shown in ((self._thickness_slider, int(round(value * 100))),
+                              (self._thickness_box, value)):
+            blocked = widget.blockSignals(True)
+            widget.setValue(shown)
+            widget.blockSignals(blocked)
+
+    def _show_selected_thickness(self) -> None:
+        """Picking a measurement in the list shows its thickness, ready to be changed."""
+        rows = sorted(self._list.row(i) for i in self._list.selectedItems())
+        if rows:
+            self._show_thickness(self._measurements[rows[0]].thickness)
+
+    def _set_measurement_thickness(self, value: float) -> None:
+        """Apply the thickness to the selected measurements, or to all without a selection."""
+        value = min(_THICKNESS_MAX, max(_THICKNESS_MIN, float(value)))
+        self._show_thickness(value)     # the other of the slider/box pair follows
+        rows = sorted(self._list.row(i) for i in self._list.selectedItems())
+        for row in rows or range(len(self._measurements)):
+            self._measurements[row] = dataclasses.replace(
+                self._measurements[row], thickness=value
+            )
+        if self._measurements:
+            self._emit_annotations()
 
     def _remove_selected_measurements(self) -> None:
         for row in sorted((self._list.row(i) for i in self._list.selectedItems()), reverse=True):

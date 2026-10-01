@@ -210,6 +210,42 @@ def test_colour_button_needs_a_selected_measurement(qapp):
     assert panel._color_btn.isEnabled()
 
 
+def test_the_thickness_slider_sets_every_line_or_the_selected_ones(qapp):
+    panel = GeometryPanel(_water())
+    emitted = []
+    panel.annotations_changed.connect(lambda anns: emitted.append(list(anns)))
+    assert panel.measurement_thickness() == pytest.approx(M.DEFAULT_THICKNESS)
+    panel.set_selection([0, 1])
+    panel._measure_selection()
+    panel.set_selection([1, 0, 2])
+    panel._measure_selection()
+    assert [m.thickness for m in panel.measurements()] == pytest.approx([0.07, 0.07])
+
+    # nothing selected in the list: every line follows, live
+    panel._thickness_slider.setValue(20)
+    assert [m.thickness for m in panel.measurements()] == pytest.approx([0.2, 0.2])
+    assert [m.thickness for m in emitted[-1]] == pytest.approx([0.2, 0.2])
+    assert panel._thickness_box.value() == pytest.approx(0.2)      # the box follows
+
+    # one selected: only that one, and picking another shows its value
+    panel._list.item(1).setSelected(True)
+    panel._thickness_box.setValue(0.35)
+    assert [m.thickness for m in panel.measurements()] == pytest.approx([0.2, 0.35])
+    assert panel._thickness_slider.value() == 35
+    panel._list.clearSelection()
+    panel._list.item(0).setSelected(True)
+    assert panel._thickness_box.value() == pytest.approx(0.2)
+    assert [m.thickness for m in panel.measurements()] == pytest.approx([0.2, 0.35])
+
+
+def test_new_measurements_take_the_thickness_shown(qapp):
+    panel = GeometryPanel(_water())
+    panel._thickness_box.setValue(0.3)       # nothing measured yet: sets the next one's
+    panel.set_selection([0, 1])
+    panel._measure_selection()
+    assert panel.measurements()[0].thickness == pytest.approx(0.3)
+
+
 # ── placing an atom at typed coordinates ──────────────────────────────────
 def _nacl() -> Structure:
     from ase.build import bulk

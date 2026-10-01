@@ -49,9 +49,9 @@ _HBOND_DASH = 0.28   # Å: dash length
 _HBOND_GAP = 0.20    # Å: gap between dashes
 
 # Measurement annotations (Geometry panel). Colours are per-view settings now
-# (measure_point/line_color); this warm accent is only the fallback default.
+# (measure_point/line_color); this warm accent is only the fallback default. A
+# line's thickness is the measurement's own (Measurement.thickness).
 _ANNOTATION_COLOR = "#ff7f0e"
-_ANNOTATION_LINE_RADIUS = 0.035
 _ANNOTATION_POINT_RADIUS = 0.18
 _ANNOTATION_FONT_SIZE = 13
 # Depth bias that lifts annotations in front of the atoms they measure.
@@ -1079,7 +1079,7 @@ class StructureRenderer:
                     )
                 else:  # distance / angle / dihedral: the path through the atoms
                     self._add_annotation_actor(
-                        _polyline_tube(points),
+                        _polyline_tube(points, 0.5 * float(item.thickness)),
                         color=item.color or self._settings.measure_line_color,
                     )
             except Exception:  # noqa: BLE001 - a bad measurement must not kill the redraw
@@ -2935,8 +2935,8 @@ def _draw_over_scene(actor) -> None:
         pass
 
 
-def _polyline_tube(points: np.ndarray, radius: float = _ANNOTATION_LINE_RADIUS) -> pv.PolyData:
-    """A thin tube along the path through ``points`` (2+ vertices)."""
+def _polyline_tube(points: np.ndarray, radius: float) -> pv.PolyData:
+    """A tube of ``radius`` (Å) along the path through ``points`` (2+ vertices)."""
     poly = pv.PolyData()
     poly.points = np.asarray(points, dtype=float)
     segments = len(points) - 1

@@ -24,6 +24,10 @@ import numpy as np
 # What a selection of N atoms measures.
 DISTANCE, ANGLE, DIHEDRAL, POINT = "distance", "angle", "dihedral", "point"
 
+# How thick (Å, the diameter) the line of a distance, angle or dihedral is drawn
+# unless told otherwise: thin enough to follow a bond without hiding it.
+DEFAULT_THICKNESS = 0.07
+
 _DEGREES = "°"
 _ANGSTROM = "Å"
 
@@ -46,6 +50,8 @@ class Measurement:
     # Optional per-item colour ("#rrggbb"); ``None`` uses the type's default from
     # RenderSettings (measure_point/line_color).
     color: Optional[str] = None
+    # How thick (Å) its line is drawn. A point is a dot, and has no line.
+    thickness: float = DEFAULT_THICKNESS
 
     @property
     def unit(self) -> str:
@@ -166,6 +172,7 @@ def selection_hint(count: int) -> str:
 
 
 __all__ = [
+    "DEFAULT_THICKNESS",
     "Measurement",
     "DISTANCE",
     "ANGLE",
