@@ -327,6 +327,105 @@ def plain_spin(value: int, minimum: int, maximum: int) -> QSpinBox:
 
 
 
+# How many steps a SliderBox's slider has, whatever its range: fine enough that
+# dragging feels continuous, while the box beside it holds the exact value.
+_SLIDER_STEPS = 1000
+
+
+class SliderBox(QWidget):
+    """A slider bound to a spin box: the slider the coarse control, the box the exact one.
+
+    They track each other through a guard, since each drives the other and a
+    naive pair would ring. :attr:`changed` carries the value — the box's, which
+    is its home — whichever of the two was moved; :meth:`set_value` with
+    ``notify=False`` shows a value without it counting as a change (a panel
+    showing the setting of a row just picked, say).
+
+    ``logarithmic`` spaces the slider by ratio rather than by difference, for a
+    value that is read as a multiple — a playback speed, a displacement
+    amplitude. On a linear scale a 0.1–10× speed puts 1× nine percent along, so
+    the entire useful range is crushed into the first centimetre of travel and
+    the default sits against the left stop. Geometrically, 1× is the midpoint.
+    """
+
+    changed = Signal(float)
+
+    def __init__(self, value: float, low: float, high: float, step: float,
+                 decimals: int = 2, suffix: str = "", logarithmic: bool = False,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        if logarithmic and (low <= 0.0 or high <= 0.0):
+            raise ValueError("a logarithmic slider needs strictly positive bounds")
+        self._low, self._high = float(low), float(high)
+        self._logarithmic = logarithmic
+        self._lock = False
+
+        self.box = QDoubleSpinBox()
+        self.box.setRange(low, high)
+        self.box.setSingleStep(step)
+        self.box.setDecimals(decimals)
+        self.box.setSuffix(suffix)
+        self.box.setValue(value)
+        self.box.setFixedWidth(_VALUE_WIDTH)
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, _SLIDER_STEPS)
+        self.slider.setValue(self._to_slider(value))
+        self.box.valueChanged.connect(self._on_box)
+        self.slider.valueChanged.connect(self._on_slider)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        layout.addWidget(self.slider, 1)
+        layout.addWidget(self.box, 0)
+
+    def value(self) -> float:
+        return float(self.box.value())
+
+    def set_value(self, value: float, notify: bool = True) -> None:
+        """Show ``value`` in both; tell :attr:`changed` only if ``notify``."""
+        self._lock = True
+        try:
+            self.box.setValue(value)
+            self.slider.setValue(self._to_slider(self.box.value()))
+        finally:
+            self._lock = False
+        if notify:
+            self.changed.emit(self.value())
+
+    def _to_slider(self, value: float) -> int:
+        low, high = self._low, self._high
+        if self._logarithmic:
+            value = min(max(value, low), high)
+            fraction = (math.log(value) - math.log(low)) / (math.log(high) - math.log(low))
+        else:
+            fraction = (value - low) / (high - low)
+        return int(round(fraction * _SLIDER_STEPS))
+
+    def _from_slider(self, position: int) -> float:
+        fraction = position / float(_SLIDER_STEPS)
+        if self._logarithmic:
+            log_low, log_high = math.log(self._low), math.log(self._high)
+            return math.exp(log_low + fraction * (log_high - log_low))
+        return self._low + fraction * (self._high - self._low)
+
+    def _on_box(self, value: float) -> None:
+        if self._lock:
+            return
+        self._lock = True
+        self.slider.setValue(self._to_slider(value))
+        self._lock = False
+        self.changed.emit(value)
+
+    def _on_slider(self, position: int) -> None:
+        if self._lock:
+            return
+        self._lock = True
+        self.box.setValue(self._from_slider(position))
+        self._lock = False
+        self.changed.emit(self.value())
+
+
 def slider_row(
     section: "_Section",
     label: str,
@@ -339,80 +438,13 @@ def slider_row(
     logarithmic: bool = False,
     on_change: Optional[Callable[[float], None]] = None,
 ) -> QDoubleSpinBox:
-    """A labelled slider bound to a spin box, on the shared grid.
-
-    The slider is the coarse control and the box the exact one; they track each
-    other through a guard, since each drives the other and a naive pair would
-    ring. Returns the box, which is the value's home.
-
-    ``logarithmic`` spaces the slider by ratio rather than by difference, for a
-    value that is read as a multiple — a playback speed, a displacement
-    amplitude. On a linear scale a 0.1–10× speed puts 1× nine percent along, so
-    the entire useful range is crushed into the first centimetre of travel and
-    the default sits against the left stop. Geometrically, 1× is the midpoint.
-    """
-    if logarithmic and (low <= 0.0 or high <= 0.0):
-        raise ValueError("a logarithmic slider needs strictly positive bounds")
-    box = QDoubleSpinBox()
-    box.setRange(low, high)
-    box.setSingleStep(step)
-    box.setDecimals(decimals)
-    box.setSuffix(suffix)
-    box.setValue(value)
-    box.setFixedWidth(_VALUE_WIDTH)
-
-    slider = QSlider(Qt.Horizontal)
-    slider.setRange(0, 1000)
-
-    if logarithmic:
-        log_low, log_high = math.log(low), math.log(high)
-
-        def to_slider(v: float) -> int:
-            v = min(max(v, low), high)
-            return int(round((math.log(v) - log_low) / (log_high - log_low) * 1000))
-
-        def from_slider(s: int) -> float:
-            return math.exp(log_low + (s / 1000.0) * (log_high - log_low))
-    else:
-
-        def to_slider(v: float) -> int:
-            return int(round((v - low) / (high - low) * 1000))
-
-        def from_slider(s: int) -> float:
-            return low + (s / 1000.0) * (high - low)
-
-    slider.setValue(to_slider(value))
-    guard = {"lock": False}
-
-    def on_box(v: float) -> None:
-        if guard["lock"]:
-            return
-        guard["lock"] = True
-        slider.setValue(to_slider(v))
-        guard["lock"] = False
-        if on_change is not None:
-            on_change(v)
-
-    def on_slider(s: int) -> None:
-        if guard["lock"]:
-            return
-        guard["lock"] = True
-        box.setValue(from_slider(s))
-        guard["lock"] = False
-        if on_change is not None:
-            on_change(box.value())
-
-    box.valueChanged.connect(on_box)
-    slider.valueChanged.connect(on_slider)
-
-    row = QWidget()
-    layout = QHBoxLayout(row)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(8)
-    layout.addWidget(slider, 1)
-    layout.addWidget(box, 0)
-    section.add(label, row)
-    return box
+    """A labelled :class:`SliderBox` on the shared grid. Returns its box, the value's home."""
+    pair = SliderBox(value, low, high, step, decimals=decimals, suffix=suffix,
+                     logarithmic=logarithmic)
+    if on_change is not None:
+        pair.changed.connect(on_change)
+    section.add(label, pair)
+    return pair.box
 
 
 def range_row(
@@ -494,6 +526,7 @@ VALUE_WIDTH = _VALUE_WIDTH
 __all__ = [
     "LABEL_COLUMN",
     "Section",
+    "SliderBox",
     "VALUE_WIDTH",
     "left",
     "plain_spin",

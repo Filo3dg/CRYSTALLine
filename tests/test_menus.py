@@ -52,7 +52,7 @@ class _StubWindow(QMainWindow):
     def _panel_docks(self):
         return list(self._docks.items())
 
-    def align_view_along(self, axis: int) -> None:
+    def align_view_along(self, axis: int, reciprocal: bool = False) -> None:
         pass
 
     def can_align_axes(self) -> bool:
@@ -144,8 +144,8 @@ def test_actions_the_window_drives_later_are_stashed_on_it(qapp):
         "_plot_actions",
     ):
         assert attr in vars(window), f"menus.build_menus did not set {attr}"
-    assert len(window._axis_actions) == 3  # a/b/c view alignment
-    assert len(window._axis_buttons) == 3
+    assert len(window._axis_actions) == 6  # a/b/c and a*/b*/c* view alignment
+    assert len(window._axis_buttons) == 6
 
 
 def test_rotate_buttons_sit_beside_the_axis_buttons(qapp):
@@ -280,9 +280,10 @@ def test_viewport_nudge_vector_moves_in_the_camera_screen_plane(qapp):
 
 
 def test_connect_signals_only_uses_attributes_that_exist_by_then():
-    """``__init__`` calls ``_connect_signals()`` before ``menus.build_menus()``,
-    so anything the menus create (``_edit_mode_action`` and friends) is not there
-    yet — connecting to it would blow up at startup, where no test can reach it."""
+    """``__init__`` opens the first tab — which wires its signals with
+    ``_connect_tab_signals()`` — before ``menus.build_menus()``, so anything the
+    menus create (``_edit_mode_action`` and friends) is not there yet —
+    connecting to it would blow up at startup, where no test can reach it."""
     from crystalline.ui.main_window import MainWindow
 
     tree = ast.parse(Path(inspect.getsourcefile(MainWindow)).read_text())
@@ -290,7 +291,7 @@ def test_connect_signals_only_uses_attributes_that_exist_by_then():
     methods = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)}
     init = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "__init__")
 
-    # Walk __init__ in order, stopping at the _connect_signals() call.
+    # Walk __init__ in order, stopping where the first tab is opened.
     assigned = set()
     for statement in init.body:
         calls = [
@@ -298,7 +299,7 @@ def test_connect_signals_only_uses_attributes_that_exist_by_then():
             for n in ast.walk(statement)
             if isinstance(n, ast.Call)
             and isinstance(n.func, ast.Attribute)
-            and n.func.attr == "_connect_signals"
+            and n.func.attr == "_add_tab"
         ]
         if calls:
             break
@@ -309,7 +310,8 @@ def test_connect_signals_only_uses_attributes_that_exist_by_then():
                     if isinstance(target, ast.Attribute) and getattr(target.value, "id", None) == "self":
                         assigned.add(target.attr)
 
-    connect = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_connect_signals")
+    connect = next(n for n in cls.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "_connect_tab_signals")
     used = {
         node.attr
         for node in ast.walk(connect)
@@ -317,7 +319,7 @@ def test_connect_signals_only_uses_attributes_that_exist_by_then():
     }
     missing = sorted(used - assigned - methods)
     assert not missing, (
-        "_connect_signals uses attributes not yet assigned when it runs: "
+        "_connect_tab_signals uses attributes not yet assigned when it runs: "
         f"{missing} — connect them after menus.build_menus(), or go through a method"
     )
 
@@ -353,3 +355,36 @@ def test_every_slot_the_menus_wire_up_exists_on_main_window():
     known = set(dir(MainWindow)) | assigned | set_by_menus
     missing = sorted(used - known)
     assert not missing, f"menus.py wires up names MainWindow does not have: {missing}"
+
+
+def test_the_reciprocal_chips_look_down_a_star_b_star_c_star(qapp):
+    """VESTA's a*, b*, c*: three more chips after a, b, c, and three more
+    entries in the View menu, each asking the viewport for a reciprocal view."""
+    window = _StubWindow()
+    asked = []
+    window.align_view_along = lambda axis, reciprocal=False: asked.append((axis, reciprocal))
+    menus.build_menus(window)
+
+    for button in window._axis_buttons:
+        button.click()
+    assert asked == [(0, False), (1, False), (2, False), (0, True), (1, True), (2, True)]
+    assert [b.property("chip") for b in window._axis_buttons[3:]] == ["axis-reciprocal"] * 3
+    assert [b.property("axis") for b in window._axis_buttons[3:]] == ["a", "b", "c"]
+    assert "a*" in window._axis_buttons[3].toolTip()
+
+    asked.clear()
+    labels = [a.text() for a in window._axis_actions]
+    assert labels[3:] == ["Along a*", "Along b*", "Along c*"]
+    for action in window._axis_actions[3:]:
+        action.trigger()
+    assert asked == [(0, True), (1, True), (2, True)]
+
+
+def test_the_viewport_takes_the_reciprocal_switch():
+    import inspect
+
+    from crystalline.ui.viewport import Viewport
+
+    parameters = inspect.signature(Viewport.align_view_along).parameters
+    assert list(parameters) == ["self", "axis", "reciprocal"]
+    assert parameters["reciprocal"].default is False

@@ -218,11 +218,11 @@ def test_measurement_annotations_are_drawn_and_survive_a_rebuild():
         [
             measure_mod.measure(positions, symbols, [0, 1]),        # distance
             measure_mod.measure(positions, symbols, [1, 0, 2]),     # angle
-            measure_mod.measure_plane(positions, symbols, [0, 1, 2]),  # plane
+            measure_mod.measure(positions, symbols, [0]),           # point
         ]
     )
     drawn = len(renderer._annotation_actors)
-    assert drawn >= 4  # two paths, a plane patch, and the labels
+    assert drawn >= 4  # two paths, a point marker, and the labels
 
     # An edit or a settings change clears the plotter — annotations must come back.
     renderer.set_settings(RenderSettings(show_bonds=False))
@@ -232,8 +232,8 @@ def test_measurement_annotations_are_drawn_and_survive_a_rebuild():
     assert renderer._annotation_actors == []
 
 
-def test_plane_annotation_has_no_floating_label():
-    """A plane patch carries no 'rms …' label — only the patch actor is drawn."""
+def test_point_annotation_has_no_floating_label():
+    """A point carries no label — its coordinates are in the list — only the marker is drawn."""
     from crystalline.core import measure as measure_mod
 
     water = Structure.empty()
@@ -243,8 +243,8 @@ def test_plane_annotation_has_no_floating_label():
     renderer = StructureRenderer(pv.Plotter(off_screen=True))
     renderer.set_structure(water)
 
-    renderer.set_annotations([measure_mod.measure_plane(water.positions, water.symbols, [0, 1, 2])])
-    assert len(renderer._annotation_actors) == 1  # just the patch, no label actor
+    renderer.set_annotations([measure_mod.measure(water.positions, water.symbols, [0])])
+    assert len(renderer._annotation_actors) == 1  # just the marker, no label actor
 
 
 def test_measurement_colours_come_from_settings():
@@ -261,6 +261,28 @@ def test_measurement_colours_come_from_settings():
 
     line_actor = renderer._annotation_actors[0]
     assert np.allclose(line_actor.GetProperty().GetColor(), (1.0, 0.0, 0.0), atol=1e-3)
+
+
+def test_a_measurement_line_is_drawn_as_thick_as_it_says():
+    import dataclasses
+
+    from crystalline.core import measure as measure_mod
+
+    water = Structure.empty()
+    water.add_atom("O", [0.0, 0.0, 0.0])
+    water.add_atom("H", [0.96, 0.0, 0.0])
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(water)
+    distance = measure_mod.measure(water.positions, water.symbols, [0, 1])
+
+    def drawn_thickness():
+        tube = renderer._annotation_actors[0].GetMapper().GetInput()
+        return np.ptp(np.array(tube.GetBounds()).reshape(3, 2)[1:], axis=1).max()
+
+    renderer.set_annotations([distance])
+    assert drawn_thickness() == pytest.approx(measure_mod.DEFAULT_THICKNESS, rel=0.05)
+    renderer.set_annotations([dataclasses.replace(distance, thickness=0.4)])
+    assert drawn_thickness() == pytest.approx(0.4, rel=0.05)
 
 
 def test_per_item_measurement_colour_overrides_the_group_default():
@@ -1388,3 +1410,228 @@ def test_an_atom_added_to_a_drawn_structure_reaches_the_viewport():
 
     assert renderer._atom_mesh_obj.n_points > before
     assert chemical_symbols[111] == "Rg"
+
+
+# ── lattice planes (hkl) ──────────────────────────────────────────────────
+def _plane_sheets(renderer):
+    """The filled sheets drawn (each plane is a sheet plus its outline)."""
+    return renderer._lattice_plane_actors[::2]
+
+
+def test_a_lattice_plane_is_drawn_and_survives_a_rebuild():
+    from crystalline.core.lattice_planes import LatticePlane
+
+    nacl = bulk("NaCl", "rocksalt", a=5.64, cubic=True)
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(Structure.from_ase(nacl))
+    assert renderer._lattice_plane_actors == []
+
+    renderer.set_lattice_planes([LatticePlane((1, 1, 1), 0.5)], nacl.cell[:])
+    assert len(_plane_sheets(renderer)) == 1
+    renderer.set_settings(RenderSettings(show_bonds=False))   # a rebuild clears the plotter
+    assert len(_plane_sheets(renderer)) == 1
+    for actor in renderer._lattice_plane_actors:
+        assert actor.GetPickable() == 0                         # atoms stay the pick target
+
+    renderer.set_lattice_planes([], nacl.cell[:])
+    assert renderer._lattice_plane_actors == []
+
+
+def test_a_family_fills_the_cell_on_screen_and_a_supercell_holds_more():
+    from crystalline.core.lattice_planes import LatticePlane
+
+    nacl = bulk("NaCl", "rocksalt", a=5.64, cubic=True)
+    cell = nacl.cell[:]
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(Structure.from_ase(nacl))
+    renderer.set_lattice_planes([LatticePlane((1, 1, 1), 0.5, family=True)], cell)
+    assert len(_plane_sheets(renderer)) == 3                    # x+y+z = 0.5, 1.5, 2.5 a
+    # indices stay in the unit cell when a 2×2×2 supercell is shown
+    renderer.set_structure(Structure.from_ase(nacl.repeat((2, 2, 2))))
+    assert len(_plane_sheets(renderer)) == 6
+    sheet = renderer._lattice_plane_actors[0].GetMapper().GetInput()
+    assert np.array(sheet.GetBounds()).reshape(3, 2)[:, 1].max() <= 2 * 5.64 + 1e-6
+
+
+def test_a_plane_takes_its_own_colour():
+    from crystalline.core.lattice_planes import LatticePlane
+
+    nacl = bulk("NaCl", "rocksalt", a=5.64, cubic=True)
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(Structure.from_ase(nacl))
+    renderer.set_lattice_planes([LatticePlane((0, 0, 1), 0.5, color="#3182bd")], nacl.cell[:])
+    colour = renderer._lattice_plane_actors[0].GetProperty().GetColor()
+    assert colour == pytest.approx((0x31 / 255, 0x82 / 255, 0xBD / 255), abs=1e-3)
+
+
+def test_a_slab_draws_planes_across_its_layer_not_its_vacuum():
+    from ase.build import fcc111
+
+    from crystalline.core.lattice_planes import LatticePlane
+
+    slab = fcc111("Pt", size=(2, 2, 3), vacuum=0.0)
+    cell = np.asarray(slab.get_cell(), dtype=float)
+    cell[2] = [0.0, 0.0, 500.0]                                 # CRYSTAL's aperiodic placeholder
+    slab.set_cell(cell)
+    slab.pbc = (True, True, False)
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(Structure.from_ase(slab))
+    origin, vectors = renderer.lattice_region()
+    heights = slab.positions[:, 2]
+    assert origin[2] == pytest.approx(heights.min() - 1.0)
+    assert np.linalg.norm(vectors[2]) == pytest.approx(heights.max() - heights.min() + 2.0)
+    renderer.set_lattice_planes([LatticePlane((1, 0, 0), family=True)], None)
+    sheet = renderer._lattice_plane_actors[0].GetMapper().GetInput()
+    assert np.ptp(np.array(sheet.GetBounds()).reshape(3, 2)[2]) < 10.0
+
+
+def test_a_molecule_has_no_lattice_planes():
+    from crystalline.core.lattice_planes import LatticePlane
+
+    water = Structure.from_ase(Atoms("H2O", positions=[(0, 0, 0), (0.96, 0, 0), (-0.24, 0.93, 0)]))
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(water)
+    assert renderer.lattice_region() is None
+    renderer.set_lattice_planes([LatticePlane((1, 0, 0))], None)
+    assert renderer._lattice_plane_actors == []
+
+
+def test_a_fitted_plane_crosses_the_cell_or_covers_a_molecule():
+    """Fitted to atoms, a plane is drawn where it was fitted: across the cell on
+    screen like an (hkl) plane, and over its own atoms where there is no cell."""
+    from crystalline.core.lattice_planes import LatticePlane, fit_plane
+
+    nacl = bulk("NaCl", "rocksalt", a=5.64, cubic=True)
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(Structure.from_ase(nacl))
+    # three atoms on (1 1 1) at ½: the fit is that plane, cut to the same polygon
+    on_plane = np.array([[2.82, 0, 0], [0, 2.82, 0], [0, 0, 2.82]])
+    renderer.set_lattice_planes([fit_plane(on_plane)], nacl.cell[:])
+    fitted = renderer._lattice_plane_actors[0].GetMapper().GetInput()
+    renderer.set_lattice_planes([LatticePlane((1, 1, 1), 0.5)], nacl.cell[:])
+    indexed = renderer._lattice_plane_actors[0].GetMapper().GetInput()
+    assert fitted.area == pytest.approx(indexed.area, rel=1e-6)
+
+    water = Structure.from_ase(Atoms("H2O", positions=[(0, 0, 0), (0.96, 0, 0), (-0.24, 0.93, 0)]))
+    renderer.set_structure(water)
+    renderer.set_lattice_planes([fit_plane(water.positions)], None)
+    patch = renderer._lattice_plane_actors[0].GetMapper().GetInput()
+    bounds = np.array(patch.GetBounds()).reshape(3, 2)
+    assert np.ptp(bounds[2]) == pytest.approx(0.0, abs=1e-9)   # flat in the molecule's plane
+    assert np.ptp(bounds[0]) >= 0.96                            # and wider than its atoms
+
+
+def test_a_plane_is_drawn_at_its_own_opacity_and_restyled_in_place():
+    from crystalline.core.lattice_planes import LatticePlane
+
+    nacl = bulk("NaCl", "rocksalt", a=5.64, cubic=True)
+    cell = nacl.cell[:]
+    renderer = StructureRenderer(pv.Plotter(off_screen=True))
+    renderer.set_structure(Structure.from_ase(nacl))
+    family = LatticePlane((1, 1, 1), 0.5, family=True, opacity=0.2)
+    renderer.set_lattice_planes([family], cell)
+    sheets = _plane_sheets(renderer)
+    assert [s.GetProperty().GetOpacity() for s in sheets] == pytest.approx([0.2] * 3)
+
+    # Dragging the slider: same planes, new opacity — the very same actors, restyled.
+    before = list(renderer._lattice_plane_actors)
+    renderer.set_lattice_planes([replace(family, opacity=0.8, color="#3182bd")], cell)
+    assert renderer._lattice_plane_actors == before
+    assert [s.GetProperty().GetOpacity() for s in sheets] == pytest.approx([0.8] * 3)
+    assert sheets[0].GetProperty().GetColor() == pytest.approx((0x31 / 255, 0x82 / 255, 0xBD / 255), abs=1e-3)
+
+    # At 0 the sheet goes, the outline stays to show where the plane lies.
+    renderer.set_lattice_planes([replace(family, opacity=0.0)], cell)
+    outlines = renderer._lattice_plane_actors[1::2]
+    assert not any(s.GetVisibility() for s in sheets)
+    assert all(o.GetVisibility() and o.GetProperty().GetOpacity() == 1.0 for o in outlines)
+
+    # Moving it is new geometry, and a rebuild keeps the opacity asked for.
+    renderer.set_lattice_planes([replace(family, offset=0.0, opacity=0.6)], cell)
+    assert renderer._lattice_plane_actors != before
+    renderer.set_settings(RenderSettings(show_bonds=False))
+    assert [s.GetProperty().GetOpacity() for s in _plane_sheets(renderer)] == pytest.approx([0.6] * 2)
+
+
+# ── the sheet a plane is drawn as ─────────────────────────────────────────
+def _sheet(cell, miller, offset, origin=(0.0, 0.0, 0.0)):
+    from crystalline.core import lattice_planes as lp
+    from crystalline.viz.renderer import _plane_sheet
+
+    point, normal, _d = lp.plane_frame(cell, miller, offset)
+    return _plane_sheet(point, normal, np.asarray(origin, dtype=float), np.asarray(cell))
+
+
+def _corners_of(sheet):
+    """The corners of a flat sheet's outline — not every point along it (the
+    clip leaves some partway along a side, where the square's diagonal met it)."""
+    from scipy.spatial import ConvexHull
+
+    points = np.asarray(sheet.points, dtype=float)
+    centre = points.mean(axis=0)
+    u, _s, _v = np.linalg.svd((points - centre).T)
+    flat = (points - centre) @ u[:, :2]              # the sheet in its own plane
+    hull = flat[ConvexHull(flat).vertices]
+    corners = []
+    for index, here in enumerate(hull):               # drop points where the outline runs straight on
+        before, after = here - hull[index - 1], hull[(index + 1) % len(hull)] - here
+        turn = before[0] * after[1] - before[1] * after[0]
+        if abs(turn) > 1e-3 * np.linalg.norm(before) * np.linalg.norm(after):
+            corners.append(here)
+    return np.asarray(corners)
+
+
+def test_a_cube_face_plane_is_a_square_and_a_111_plane_a_hexagon_or_triangle():
+    cell = 4.0 * np.eye(3)
+    square = _sheet(cell, (0, 0, 1), 0.25)
+    assert square.area == pytest.approx(16.0, rel=1e-5) and np.allclose(square.points[:, 2], 1.0)
+    assert len(_corners_of(square)) == 4
+    hexagon = _sheet(cell, (1, 1, 1), 1.5)
+    assert hexagon.area == pytest.approx(3 * np.sqrt(3) / 2 * 8, rel=1e-5)   # side 2√2
+    assert len(_corners_of(hexagon)) == 6
+    triangle = _sheet(cell, (1, 1, 1), 0.75)
+    assert triangle.area == pytest.approx(np.sqrt(3) / 4 * 18, rel=1e-5)    # side 3√2
+    assert len(_corners_of(triangle)) == 3
+    # through a corner only, or outside altogether: nothing to draw
+    assert _sheet(cell, (1, 1, 1), 0.0) is None
+    assert _sheet(cell, (1, 1, 1), 3.2) is None
+
+
+def test_a_plane_in_a_face_of_the_cell_is_kept():
+    """The planes of a family that fall on the cell's faces — (1 0 0) at 0
+    and 1 — are drawn, not lost to rounding at the clip."""
+    cell = 4.0 * np.eye(3)
+    for offset in (0.0, 1.0):
+        face = _sheet(cell, (1, 0, 0), offset)
+        assert face is not None and face.area == pytest.approx(16.0, rel=1e-5)
+
+
+def test_a_plane_stops_at_the_faces_of_a_slanted_cell():
+    from ase.geometry import cellpar_to_cell
+
+    cell = np.asarray(cellpar_to_cell([8.24, 13.45, 8.97, 90, 105.48, 90]))
+    sheet = _sheet(cell, (0, 0, 1), 0.5)
+    # the (0 0 1) section of a monoclinic cell is the a×b parallelogram, not the
+    # axis-aligned box around the cell
+    assert sheet.area == pytest.approx(np.linalg.norm(np.cross(cell[0], cell[1])), rel=1e-5)
+    fractional = sheet.points @ np.linalg.inv(cell)
+    assert np.all(fractional > -1e-6) and np.all(fractional < 1 + 1e-6)
+    assert np.allclose(fractional[:, 2], 0.5)
+
+
+def test_the_region_can_be_moved_off_the_origin():
+    cell = 4.0 * np.eye(3)
+    origin = (0.0, 0.0, -2.0)
+    sheet = _sheet(cell, (0, 0, 1), -0.25, origin)
+    assert sheet is not None and np.allclose(sheet.points[:, 2], -1.0)
+    assert _sheet(cell, (0, 0, 1), 0.75, origin) is None
+
+
+def test_an_orbital_is_still_clipped_to_its_cell():
+    """The clip the lattice planes now share is the one orbitals always used."""
+    from crystalline.viz.renderer import _clip_to_cell
+
+    sphere = pv.Sphere(radius=3.0, center=(0.0, 0.0, 0.0))
+    clipped = _clip_to_cell(sphere, 2.0 * np.eye(3))
+    low, high = np.array(clipped.bounds).reshape(3, 2).T
+    assert np.all(low >= -1e-6) and np.all(high <= 2.0 + 1e-6)

@@ -34,6 +34,7 @@ from ase.data import chemical_symbols
 from scipy.spatial import cKDTree
 
 from crystalline.core import elements
+from crystalline.core import lattice_planes as lp
 from crystalline.core.structure import Structure
 from crystalline.viz.fonts import unicode_font, use_unicode_font
 from crystalline.viz.render_settings import RenderSettings
@@ -48,14 +49,11 @@ _HBOND_DASH = 0.28   # Å: dash length
 _HBOND_GAP = 0.20    # Å: gap between dashes
 
 # Measurement annotations (Geometry panel). Colours are per-view settings now
-# (measure_point/line/plane_color); this warm accent is only the fallback default.
+# (measure_point/line_color); this warm accent is only the fallback default. A
+# line's thickness is the measurement's own (Measurement.thickness).
 _ANNOTATION_COLOR = "#ff7f0e"
-_ANNOTATION_LINE_RADIUS = 0.035
 _ANNOTATION_POINT_RADIUS = 0.18
 _ANNOTATION_FONT_SIZE = 13
-_ANNOTATION_PLANE_OPACITY = 0.28
-_ANNOTATION_PLANE_MARGIN = 1.25   # patch overhang beyond the fitted atoms
-_ANNOTATION_PLANE_MIN_SIZE = 2.0  # Angstrom, so a tight plane is still visible
 # Depth bias that lifts annotations in front of the atoms they measure.
 _ANNOTATION_DEPTH_OFFSET = -66000.0
 
@@ -72,6 +70,25 @@ _SYMMETRY_BOUNDS_MARGIN = 0.5
 # How far back from its far end an element's label sits, as a fraction of the
 # distance to the centre — see _label_anchor.
 _SYMMETRY_LABEL_INSET = 0.08
+
+# Lattice planes (hkl) from the Geometry panel: translucent sheets clipped to the
+# drawn cell, each outlined in a darker shade of its own colour so its edge reads
+# where it crosses others.
+_LATTICE_PLANE_COLOR = "#e6550d"
+_LATTICE_PLANE_EDGE_SHADE = 0.6
+_LATTICE_PLANE_EDGE_WIDTH = 2.0
+# How far past the atoms a slab's planes reach across the vacuum, in Å.
+_LATTICE_PLANE_SLAB_MARGIN = 1.0
+# A plane this close (Å) to a face of the region counts as inside it — the
+# planes of a family that fall on the cell's faces — and one cutting out less
+# area than this (Å²) only grazes an edge or a corner, and is not drawn.
+_LATTICE_PLANE_FACE_MARGIN = 1e-6
+_LATTICE_PLANE_MIN_AREA = 1e-6
+# A plane fitted to the atoms of a molecule has no cell to be drawn across, so it
+# is a square patch over the atoms: this much wider than they spread, and never
+# smaller than this (Å), so three close atoms still show a plane.
+_FITTED_PATCH_MARGIN = 1.25
+_FITTED_PATCH_MIN_SIZE = 2.0
 
 # Coordination-polyhedra outline: only edges where adjacent faces bend by more
 # than this are real polyhedron edges (the rest are the hull's triangulation of
@@ -278,6 +295,14 @@ class StructureRenderer:
         self._symmetry_elements: list = []    # symmetry elements drawn over the structure
         self._symmetry_actors: list = []
         self._symmetry_labels = False         # write each element's symbol beside it
+        # Lattice planes (hkl): the planes asked for, the cell their indices are
+        # quoted in, and the actors drawing them.
+        self._lattice_planes: list = []
+        self._lattice_plane_cell: Optional[np.ndarray] = None
+        self._lattice_plane_actors: list = []
+        # (index into _lattice_planes, sheet actor, outline actor) for each drawn
+        # sheet, so a change of colour or opacity restyles them in place.
+        self._lattice_plane_parts: list = []
         self._bond_structure: Optional[Structure] = None  # clean cell for coordination
         # Geometry that decides *which* atoms are bonded while something moves the
         # atoms without changing the chemistry (a phonon animation). None means
@@ -311,6 +336,7 @@ class StructureRenderer:
         self._density_miller_cell = None
         self._slice_frame = None       # (centre, normal, in-plane up) of a drawn slice
         self._slice_extent = None      # (point, u, w, u range, w range) of its rectangle
+        self._slice_plane = None       # (reference cell, LatticePlane) of a drawn slice
         self._surface_cache = None     # (key, pieces) of the last contoured field
         self._density_bar = None       # title of the field's colour bar, if one is shown
         self._cutaway = None
@@ -678,6 +704,8 @@ class StructureRenderer:
         self._orbital_actors = []     # likewise: _draw_orbital re-adds them below
         self._annotation_actors = []  # plotter.clear() dropped them; _draw_annotations re-adds
         self._symmetry_actors = []    # likewise: _draw_symmetry_elements re-adds them
+        self._lattice_plane_actors = []  # and _draw_lattice_planes
+        self._lattice_plane_parts = []
         self._density_actors = []     # and _draw_density, last of all
         self._density_bar = None      # plotter.clear() took the colour bar too
         self._highlight_actors = {}
@@ -713,6 +741,7 @@ class StructureRenderer:
         self._draw_orbital()      # and so does a shown orbital
         self._draw_annotations()  # measurements survive a rebuild (plotter.clear())
         self._draw_symmetry_elements()  # and so do the shown symmetry elements
+        self._draw_lattice_planes()  # and the lattice planes asked for
         # A drawn field used to vanish on any rebuild — a display setting, an
         # edit — while its actors were still counted as shown. It goes last so
         # a slice's cutaway reaches every actor the rebuild has just made.
@@ -1007,15 +1036,15 @@ class StructureRenderer:
             edges.points, self._positions, self._cell_or_none()
         )
 
-    # ── measurement annotations (points / lines / planes) ───────────────
+    # ── measurement annotations (points / lines) ────────────────────────
     def set_annotations(self, annotations) -> None:
         """Draw geometry measurements over the structure, replacing any shown.
 
         ``annotations`` are :class:`~crystalline.core.measure.Measurement`
-        objects: a point becomes a marker, a distance/angle/dihedral becomes the
-        polyline through its atoms, and a plane becomes a translucent patch.
-        They are kept and redrawn on every rebuild, so they survive
-        an edit or a settings change rather than blinking out.
+        objects: a point becomes a marker, and a distance/angle/dihedral becomes
+        the polyline through its atoms. They are kept and redrawn on every
+        rebuild, so they survive an edit or a settings change rather than
+        blinking out.
         """
         self._annotations = list(annotations)
         self._clear_annotations()
@@ -1029,7 +1058,7 @@ class StructureRenderer:
 
     def _draw_annotations(self) -> None:
         """(Re)draw the stored measurements. Never raises into a redraw."""
-        from crystalline.core.measure import DIHEDRAL, PLANE, POINT
+        from crystalline.core.measure import DIHEDRAL, POINT
 
         self._annotation_actors = []
         if not self._annotations:
@@ -1048,17 +1077,15 @@ class StructureRenderer:
                         pv.Sphere(radius=_ANNOTATION_POINT_RADIUS, center=points[0]),
                         color=item.color or self._settings.measure_point_color,
                     )
-                elif item.kind == PLANE:
-                    self._draw_annotation_plane(item, points)
                 else:  # distance / angle / dihedral: the path through the atoms
                     self._add_annotation_actor(
-                        _polyline_tube(points),
+                        _polyline_tube(points, 0.5 * float(item.thickness)),
                         color=item.color or self._settings.measure_line_color,
                     )
             except Exception:  # noqa: BLE001 - a bad measurement must not kill the redraw
                 continue
-            if item.kind in (POINT, PLANE):
-                labels.append("")  # points and planes carry no floating label
+            if item.kind == POINT:
+                labels.append("")  # a point carries no floating label
             else:
                 labels.append(f"{item.value:.3f} {item.unit}".strip())
             label_points.append(_annotation_anchor(item.kind, points, DIHEDRAL))
@@ -1074,20 +1101,6 @@ class StructureRenderer:
             )
             actor.SetPickable(False)
             self._annotation_actors.append(actor)
-
-    def _draw_annotation_plane(self, item, points: np.ndarray) -> None:
-        """A translucent patch spanning the fitted atoms."""
-        origin = np.asarray(item.origin, dtype=float)
-        normal = np.asarray(item.normal, dtype=float)
-        # Size the patch to the atoms it was fitted through, with a little margin.
-        spread = float(np.linalg.norm(points - origin, axis=1).max())
-        size = max(spread * 2.0 * _ANNOTATION_PLANE_MARGIN, _ANNOTATION_PLANE_MIN_SIZE)
-        patch = pv.Plane(center=origin, direction=normal, i_size=size, j_size=size)
-        self._add_annotation_actor(
-            patch, color=item.color or self._settings.measure_plane_color,
-            opacity=_ANNOTATION_PLANE_OPACITY,
-            on_top=False,  # a plane reads as a slice *through* the structure
-        )
 
     def _add_annotation_actor(
         self, mesh, color: str = None, opacity: float = 1.0, on_top: bool = True
@@ -1210,6 +1223,134 @@ class StructureRenderer:
         if on_top:
             _draw_over_scene(actor)
         self._symmetry_actors.append(actor)
+
+    # ── lattice planes (hkl) ────────────────────────────────────────────
+    def set_lattice_planes(self, planes, miller_cell=None) -> None:
+        """Draw lattice planes over the structure, replacing any shown.
+
+        ``planes`` are :class:`~crystalline.core.lattice_planes.LatticePlane`
+        objects, their indices quoted in ``miller_cell`` — the conventional cell
+        — or, without one, in the cell on screen. Each is drawn as the polygon it
+        cuts out of the drawn cell (the supercell, if one is shown), and a family
+        as every plane of it crossing that cell. A
+        :class:`~crystalline.core.lattice_planes.FittedPlane` among them is drawn
+        the same way, where it was fitted. Kept and redrawn on every rebuild,
+        like the measurements.
+
+        A change of colour or opacity alone restyles the sheets already drawn
+        rather than building them again, so dragging the opacity slider over
+        a family of sixty planes stays smooth.
+        """
+        planes = list(planes)
+        cell = None if miller_cell is None else np.asarray(miller_cell, dtype=float)
+        same_cell = (cell is None and self._lattice_plane_cell is None) or (
+            cell is not None and self._lattice_plane_cell is not None
+            and cell.shape == self._lattice_plane_cell.shape
+            and np.array_equal(cell, self._lattice_plane_cell))
+        if (same_cell and self._lattice_plane_parts and len(planes) == len(self._lattice_planes)
+                and all(new.drawn_the_same(old) for new, old in zip(planes, self._lattice_planes))):
+            self._lattice_planes = planes
+            for index, sheet, outline in self._lattice_plane_parts:
+                _style_lattice_plane(sheet, outline, planes[index])
+            self.plotter.render()
+            return
+        self._lattice_plane_cell = cell
+        if not planes and not self._lattice_planes and not self._lattice_plane_actors:
+            return  # nothing shown, nothing asked for: no redraw
+        self._lattice_planes = planes
+        self._clear_lattice_planes()
+        self._draw_lattice_planes()
+        self.plotter.render()
+
+    def _clear_lattice_planes(self) -> None:
+        for actor in self._lattice_plane_actors:
+            self.plotter.remove_actor(actor, render=False)
+        self._lattice_plane_actors = []
+        self._lattice_plane_parts = []
+
+    def lattice_region(self):
+        """``(origin, vectors)`` of the region lattice planes are drawn across.
+
+        The cell on screen — the supercell when one is tiled — with a slab's
+        vacuum axis cut down to the layer and a little either side of it. A
+        molecule has no lattice, and gives ``None``.
+        """
+        cell = self._cell_or_none()
+        if self._structure is None or cell is None or len(self._positions) == 0:
+            return None
+        origin = np.zeros(3)
+        vectors = cell.copy()
+        periodic = [bool(p) for p in self._structure.pbc]
+        if not any(periodic):
+            return None
+        for axis, is_periodic in enumerate(periodic):
+            if is_periodic:
+                continue
+            direction = vectors[axis] / np.linalg.norm(vectors[axis])
+            heights = self._positions @ direction
+            low = float(heights.min()) - _LATTICE_PLANE_SLAB_MARGIN
+            high = float(heights.max()) + _LATTICE_PLANE_SLAB_MARGIN
+            origin = origin + low * direction
+            vectors[axis] = direction * (high - low)
+        return origin, vectors
+
+    def _miller_reference(self, cell):
+        """The cell Miller indices are read in: ``cell`` — the conventional cell,
+        as given — if it has a volume, else the cell on screen, else ``None``.
+
+        The density slice and the lattice planes both name planes this way, so
+        (hkl) is the same plane in both.
+        """
+        if cell is not None and cell.shape == (3, 3) and abs(np.linalg.det(cell)) > 1e-8:
+            return cell
+        return self._cell_or_none()
+
+    def _draw_lattice_planes(self) -> None:
+        """(Re)draw the stored lattice planes. Never raises into a redraw."""
+        self._lattice_plane_actors = []
+        self._lattice_plane_parts = []
+        if not self._lattice_planes:
+            return
+        region = self.lattice_region()
+        reference = self._miller_reference(self._lattice_plane_cell)
+        for index, plane in enumerate(self._lattice_planes):
+            try:
+                if isinstance(plane, lp.FittedPlane):
+                    # Across the drawn cell, like an (hkl) plane; over its own
+                    # atoms where there is no cell — a molecule.
+                    sheet = (_plane_sheet(plane.point, plane.normal, *region)
+                             if region is not None else _fitted_patch(plane))
+                    if sheet is not None:
+                        self._add_lattice_plane(sheet, index, plane)
+                    continue
+                if region is None or reference is None:
+                    continue
+                origin, vectors = region
+                corners = lp.region_corners(origin, vectors)
+                offsets = (lp.offsets_across(reference, plane.miller, plane.offset, corners)
+                           if plane.family else [plane.offset])
+                for offset in offsets:
+                    point, normal, _spacing = lp.plane_frame(reference, plane.miller, offset)
+                    sheet = _plane_sheet(point, normal, origin, vectors)
+                    if sheet is not None:
+                        self._add_lattice_plane(sheet, index, plane)
+            except Exception:  # noqa: BLE001 - one bad plane must not kill the redraw
+                continue
+
+    def _add_lattice_plane(self, mesh, index: int, plane) -> None:
+        sheet = self.plotter.add_mesh(mesh, smooth_shading=False, render=False)
+        sheet.SetPickable(False)  # a plane is never a pick target
+        edges = mesh.extract_feature_edges(
+            boundary_edges=True, feature_edges=False,
+            manifold_edges=False, non_manifold_edges=False,
+        )
+        outline = self.plotter.add_mesh(
+            edges, line_width=_LATTICE_PLANE_EDGE_WIDTH, lighting=False, render=False,
+        )
+        outline.SetPickable(False)
+        _style_lattice_plane(sheet, outline, plane)
+        self._lattice_plane_actors.extend((sheet, outline))
+        self._lattice_plane_parts.append((index, sheet, outline))
 
     # ── crystalline orbital (isosurface) ────────────────────────────────
     def set_orbital(self, field, isovalue: float = DEFAULT_ORBITAL_ISOVALUE) -> None:
@@ -1437,13 +1578,10 @@ class StructureRenderer:
         """
         from crystalline.crystalio import density as density_module
 
-        reference = self._density_miller_cell
-        if reference is None:
-            reference = self._cell_or_none()
+        reference = self._miller_reference(self._density_miller_cell)
         if reference is None:
             reference = lattice
-        point, normal, _spacing = density_module.miller_plane(
-            reference, options.miller, options.offset)
+        point, normal, _spacing = lp.plane_frame(reference, options.miller, options.offset)
 
         # Two directions in the plane, the first along whichever cell edge lies
         # closest to it, so that a (001) map is drawn square to its a axis.
@@ -1485,6 +1623,7 @@ class StructureRenderer:
         centre = point + 0.5 * (u_low + u_high) * u + 0.5 * (w_low + w_high) * w
         self._slice_frame = (centre, normal, u)
         self._slice_extent = (point, u, w, (u_low, u_high), (w_low, w_high))
+        self._slice_plane = (reference, lp.LatticePlane(options.miller, options.offset))
         return mesh
 
     def _scene_corners(self, lattice, field) -> np.ndarray:
@@ -1495,9 +1634,7 @@ class StructureRenderer:
         cell = self._cell_or_none()
         box = cell if cell is not None else lattice
         origin = np.zeros(3) if cell is not None else field.origin
-        corners = np.array([origin + i * box[0] + j * box[1] + k * box[2]
-                            for i in (0, 1) for j in (0, 1) for k in (0, 1)])
-        points.append(corners)
+        points.append(lp.region_corners(origin, box))
         return np.vstack(points)
 
     def _add_slice_mesh(self, mesh, field, options) -> None:
@@ -1563,11 +1700,12 @@ class StructureRenderer:
         map around each dot stays visible.
         """
         extent = getattr(self, "_slice_extent", None)
+        on = getattr(self, "_slice_plane", None)
         structure = self._structure
-        if extent is None or structure is None or len(structure) == 0:
+        if extent is None or on is None or structure is None or len(structure) == 0:
             return
         point, u, w, (u_low, u_high), (w_low, w_high) = extent
-        normal = np.cross(u, w)
+        normal = np.cross(u, w)     # the plane's own normal: u, then w = normal × u
         positions = np.asarray(structure.positions, dtype=float)
         numbers = np.asarray(structure.numbers, dtype=int)
         cell = self._cell_or_none()
@@ -1591,9 +1729,9 @@ class StructureRenderer:
                                for k in range(low[2], high[2] + 1)]
         images = (positions[None, :, :] + np.asarray(offsets)[:, None, :]).reshape(-1, 3)
         kinds = np.tile(numbers, len(offsets))
-        distance = (images - point) @ normal
+        distance = lp.distances_to(*on, images)
         along, across = (images - point) @ u, (images - point) @ w
-        keep = ((np.abs(distance) < _IN_PLANE)
+        keep = ((np.abs(distance) < lp.ON_PLANE_TOLERANCE)
                 & (along >= u_low) & (along <= u_high)
                 & (across >= w_low) & (across <= w_high))
         if not keep.any():
@@ -2544,8 +2682,6 @@ _MAX_SLICE_POINTS = 400
 # How far behind a slice the cutaway sits, in Angstrom: enough that nothing
 # lying exactly in the plane pokes through it, not enough to be seen.
 _CUTAWAY_BEHIND = 0.02
-# An atom this close to a slice counts as lying in it, and is marked there.
-_IN_PLANE = 0.15
 # A mark's size, as a fraction of the atom's drawn radius.
 _IN_PLANE_MARKER = 0.35
 
@@ -2564,35 +2700,74 @@ def _clip_to_cell(surface, cell):
     but it belongs to neighbouring cells whose atoms are not on screen, so it
     reads as lobes floating in empty space. Clipping keeps the picture to the
     cell that is actually drawn; a supercell is how to see more of the orbital.
-
-    Six half-space clips, one per face. Best-effort: a cell that cannot define
-    them leaves the surface whole rather than losing it.
     """
     if cell is None:
         return surface
-    cell = np.asarray(cell, dtype=float)
-    if cell.shape != (3, 3) or abs(np.linalg.det(cell)) < 1e-8:
+    return _clip_to_region(surface, np.zeros(3), cell)
+
+
+def _clip_to_region(surface, origin, vectors, margin: float = 0.0):
+    """Cut ``surface`` back to the parallelepiped at ``origin`` spanned by ``vectors``.
+
+    Six half-space clips, one per face. A face's normal is not its edge unless
+    the cell is orthogonal: the one through ``vectors[i]`` is along the
+    reciprocal vector of that axis, which also points out of the region on
+    that side. ``margin`` (Å) moves every face outward, so that a lattice plane
+    lying exactly in a face is kept rather than lost to rounding.
+
+    Best-effort: a region that cannot define its faces leaves the surface whole
+    rather than losing it.
+    """
+    try:
+        outward = lp.reciprocal_lattice(vectors)
+    except ValueError:
         return surface
+    origin = np.asarray(origin, dtype=float)
+    vectors = np.asarray(vectors, dtype=float)
     try:
         for axis in range(3):
-            # The face's outward normal is perpendicular to the other two edges,
-            # which is not the edge direction itself unless the cell is orthogonal.
-            normal = np.cross(cell[(axis + 1) % 3], cell[(axis + 2) % 3])
-            length = np.linalg.norm(normal)
-            if length < 1e-12:
-                return surface
-            normal = normal / length
-            if np.dot(normal, cell[axis]) < 0:
-                normal = -normal  # point it out of the cell, not into it
-            # pyvista's invert=True keeps what lies *below* the plane. The cell
-            # is above the face at the origin and below the one at cell[axis].
-            for origin, invert in ((np.zeros(3), False), (cell[axis], True)):
-                surface = surface.clip(normal=normal, origin=origin, invert=invert)
+            normal = outward[axis] / np.linalg.norm(outward[axis])
+            # pyvista's invert=True keeps what lies *below* the plane. The region
+            # is above the face at the origin and below the one at vectors[axis].
+            for base, invert, push in ((origin, False, -margin),
+                                       (origin + vectors[axis], True, margin)):
+                surface = surface.clip(normal=normal, origin=base + push * normal,
+                                       invert=invert)
                 if surface.n_points == 0:
                     return surface
-    except Exception:  # noqa: BLE001 - purely cosmetic; never lose the orbital
+    except Exception:  # noqa: BLE001 - purely cosmetic; never lose the surface
         return surface
     return surface
+
+
+def _plane_sheet(point, normal, origin, vectors):
+    """The part of the plane through ``point`` (normal ``normal``) inside a region.
+
+    A square in the plane large enough to cover the region, cut back by
+    :func:`_clip_to_region` — so a plane in a slanted cell stops at the cell's
+    own faces rather than filling the box around it. ``None`` when the plane
+    misses the region, or only grazes an edge or a corner of it.
+    """
+    corners = lp.region_corners(origin, vectors)
+    centre = corners.mean(axis=0)
+    normal = np.asarray(normal, dtype=float)
+    foot = centre - normal * float((centre - np.asarray(point, dtype=float)) @ normal)
+    size = 2.0 * float(np.linalg.norm(corners - centre, axis=1).max()) + 1.0
+    square = pv.Plane(center=foot, direction=normal, i_size=size, j_size=size,
+                      i_resolution=1, j_resolution=1)
+    sheet = _clip_to_region(square, origin, vectors, margin=_LATTICE_PLANE_FACE_MARGIN)
+    if sheet.n_cells == 0 or float(sheet.area) < _LATTICE_PLANE_MIN_AREA:
+        return None
+    return sheet
+
+
+def _fitted_patch(plane):
+    """A square of the fitted ``plane`` over the atoms it was fitted to."""
+    point = np.asarray(plane.point, dtype=float)
+    spread = float(np.linalg.norm(np.asarray(plane.points) - point, axis=1).max())
+    size = max(spread * 2.0 * _FITTED_PATCH_MARGIN, _FITTED_PATCH_MIN_SIZE)
+    return pv.Plane(center=point, direction=plane.normal, i_size=size, j_size=size,
+                    i_resolution=1, j_resolution=1)
 
 
 def _sphere_radius(z, scale: float = _ATOM_SCALE):
@@ -2600,6 +2775,22 @@ def _sphere_radius(z, scale: float = _ATOM_SCALE):
     scalar = np.isscalar(z) or np.asarray(z).ndim == 0
     drawn = elements.radii(z) * scale
     return float(drawn[0]) if scalar else drawn
+
+
+def _style_lattice_plane(sheet, outline, plane) -> None:
+    """Colour and opacity of one drawn plane: its sheet, and its solid outline.
+
+    The outline stays opaque at any opacity, so a plane faded right down to
+    nothing still shows where it lies.
+    """
+    color = plane.color or _LATTICE_PLANE_COLOR
+    rgb = _hex_to_rgb(color).astype(float) / 255.0
+    sheet.GetProperty().SetColor(*rgb)
+    sheet.GetProperty().SetOpacity(float(plane.opacity))
+    # A fully transparent sheet is left out of the render rather than drawn
+    # invisibly over the atoms.
+    sheet.SetVisibility(plane.opacity > 0.0)
+    outline.GetProperty().SetColor(*np.clip(rgb * _LATTICE_PLANE_EDGE_SHADE, 0, 1))
 
 
 def _hex_to_rgb(color: str) -> np.ndarray:
@@ -2744,8 +2935,8 @@ def _draw_over_scene(actor) -> None:
         pass
 
 
-def _polyline_tube(points: np.ndarray, radius: float = _ANNOTATION_LINE_RADIUS) -> pv.PolyData:
-    """A thin tube along the path through ``points`` (2+ vertices)."""
+def _polyline_tube(points: np.ndarray, radius: float) -> pv.PolyData:
+    """A tube of ``radius`` (Å) along the path through ``points`` (2+ vertices)."""
     poly = pv.PolyData()
     poly.points = np.asarray(points, dtype=float)
     segments = len(points) - 1

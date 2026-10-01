@@ -7,6 +7,8 @@ claim the panel makes, and it is what separates point symmetry from the crystal
 reproduce it (the axis is a screw), so no 2-fold may be reported.
 """
 
+import re
+
 import numpy as np
 import pytest
 
@@ -144,8 +146,100 @@ def test_axes_and_planes_are_named_by_lattice_direction():
 
     assert "∥ [001]" in _sites(analysis, S.AXIS)
     assert "∥ [111]" in _sites(analysis, S.AXIS)
-    assert "⊥ (110)" in _sites(analysis, S.PLANE)
+    assert "∥ (110)" in _sites(analysis, S.PLANE)    # the lattice plane the mirror lies in
     assert _sites(analysis, S.POINT) == [""]  # a centre points nowhere
+
+
+def test_a_mirror_is_named_by_its_hkl_not_by_the_direction_of_its_normal():
+    """On hexagonal axes the two differ: the mirror whose normal is a is the
+    plane (2 1̄ 1̄ 0); (1 0 0) is the plane whose normal is a*. Four indices, as
+    the Geometry panel's lattice planes are written."""
+    from ase.build import bulk
+
+    analysis = S.analyse(Structure.from_ase(bulk("Zn", "hcp", a=2.66, c=4.95)))
+    planes = set(_sites(analysis, S.PLANE))
+    assert planes == {"∥ (21̄1̄0)", "∥ (12̄10)", "∥ (112̄0)"}
+
+
+# Every crystal system that has axes and mirrors to name, each lattice centring
+# among them, the trigonal ones on both the axes CRYSTAL can be given (hexagonal
+# and rhombohedral), and centred cubic crystals in their primitive cells too —
+# what the panel analyses with the conventional cell switched off, and a cell
+# whose axes are not orthogonal although the crystal is cubic.
+_SYSTEMS = {
+    "monoclinic P2/m": crystal(["Si", "O"], [(0.1, 0, 0.2), (0.3, 0.5, 0.1)], spacegroup=10,
+                               cellpar=[5, 6, 7, 90, 103, 90]),
+    "orthorhombic Pmmm": crystal(["Si", "O"], [(0, 0, 0), (0.5, 0.5, 0.2)], spacegroup=47,
+                                 cellpar=[4, 5, 6, 90, 90, 90]),
+    "orthorhombic Cmmm (C-centred)": crystal(["Si", "O"], [(0, 0, 0), (0, 0.5, 0.3)],
+                                             spacegroup=65, cellpar=[4, 6, 5, 90, 90, 90]),
+    "orthorhombic Fmmm (F-centred)": crystal(["Si"], [(0, 0, 0)], spacegroup=69,
+                                             cellpar=[4, 5, 6, 90, 90, 90]),
+    "orthorhombic Immm (I-centred)": crystal(["Si"], [(0, 0, 0)], spacegroup=71,
+                                             cellpar=[4, 5, 6, 90, 90, 90]),
+    "tetragonal P4/mmm": crystal(["Si", "O"], [(0, 0, 0), (0.5, 0.5, 0.3)], spacegroup=123,
+                                 cellpar=[4, 4, 6, 90, 90, 90]),
+    "tetragonal I4/mmm (I-centred)": crystal(["Si", "O"], [(0, 0, 0), (0, 0, 0.35)],
+                                             spacegroup=139, cellpar=[4, 4, 9, 90, 90, 90]),
+    "cubic Fm-3m": _CRYSTALS["Fm-3m"],
+    "cubic Fm-3m, primitive cell": bulk("NaCl", "rocksalt", a=5.64),
+    "cubic Im-3m, primitive cell": bulk("Fe", "bcc", a=2.87),
+    "trigonal R-3m, hexagonal axes": crystal(["Bi"], [(0, 0, 0.234)], spacegroup=166,
+                                             cellpar=[4.55, 4.55, 11.86, 90, 90, 120]),
+    "trigonal R-3m, rhombohedral axes": crystal(["Bi"], [(0.234, 0.234, 0.234)], spacegroup=166,
+                                                setting=2, cellpar=[4.75] * 3 + [57.2] * 3),
+    "trigonal P-3m1": crystal(["Cd", "I"], [(0, 0, 0), (1 / 3, 2 / 3, 0.25)], spacegroup=164,
+                              cellpar=[4.24, 4.24, 6.84, 90, 90, 120]),
+    "hexagonal P6_3/mmc": _CRYSTALS["P6_3/mmc"],
+    "cubic Pm-3m": _CRYSTALS["Pm-3m"],
+}
+
+
+def _index_values(site: str):
+    """``"∥ (21̄1̄0)"`` → ``[2, -1, -1, 0]``: the indices a site label shows."""
+    body = site[site.index("(" if "(" in site else "[") + 1:-1]
+    digits = r"(\d+)" if " " in body else r"(\d)"   # run together only when single-digit
+    return [-int(value) if bar else int(value)
+            for value, bar in re.findall(digits + "(" + re.escape(S._OVERLINE) + ")?", body)]
+
+
+@pytest.mark.parametrize("name", sorted(_SYSTEMS))
+def test_each_label_names_the_lattice_row_or_plane_the_element_really_lies_along(name):
+    """Checked against the geometry, not against the code that wrote the label:
+    an axis labelled [uvw] runs along u a + v b + w c, and a mirror labelled
+    (hkl) contains the lattice rows of that plane — every [uvw] with
+    h u + k v + l w = 0 — so each is perpendicular to the mirror's normal."""
+    from crystalline.core import lattice_planes as lp
+
+    structure = Structure.from_ase(_SYSTEMS[name])
+    cell = np.asarray(structure.cell, dtype=float)
+    analysis = S.analyse(structure)
+    named = [e for e in analysis.elements if e.kind in (S.AXIS, S.PLANE)]
+    assert any(e.kind == S.PLANE for e in named), f"{name} should have a mirror to name"
+
+    for element in named:
+        values = _index_values(element.site)
+        direction = np.asarray(element.direction, dtype=float)
+        if element.kind == S.AXIS:
+            along = np.asarray(values, dtype=float) @ cell
+            assert abs(along @ direction) == pytest.approx(np.linalg.norm(along), rel=1e-6), \
+                f"{element.label} {element.site} in {name}"
+            continue
+        hkl = np.asarray(lp.three_index(values) if len(values) == 4 else values)
+        rows = [np.cross(hkl, unit) for unit in np.eye(3, dtype=int)]
+        rows = [row for row in rows if np.any(row)]          # integer [uvw] in (hkl)
+        assert np.linalg.matrix_rank(np.asarray(rows)) == 2
+        for row in rows:
+            assert (row @ cell) @ direction == pytest.approx(0.0, abs=1e-6), \
+                f"{element.label} {element.site} in {name}: [{row}] leaves the mirror"
+
+
+def test_a_triclinic_crystal_has_nothing_to_name_but_its_centre():
+    """P-1: no axis, no mirror — only the inversion centre, which points nowhere."""
+    triclinic = crystal(["Si", "O"], [(0.1, 0.2, 0.3), (0.3, 0.1, 0.05)], spacegroup=2,
+                        cellpar=[5, 6, 7, 81, 97, 103])
+    analysis = S.analyse(Structure.from_ase(triclinic))
+    assert [(e.kind, e.site) for e in analysis.elements] == [(S.POINT, "")]
 
 
 def test_the_centre_is_a_point_of_the_cell_every_element_passes_through():

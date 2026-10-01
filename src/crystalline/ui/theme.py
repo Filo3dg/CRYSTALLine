@@ -119,6 +119,11 @@ def stylesheet(palette: Palette) -> str:
     tone = "light" if palette is DARK else "dark"
     chevron_up = asset_path(f"chevron-up-{tone}.svg")
     chevron_down = asset_path(f"chevron-down-{tone}.svg")
+    # A tab's ×, in the muted text colour and stronger under the pointer. The
+    # style's own is a red-backed button on the current tab, which shouts on a
+    # bar whose tabs are only file names.
+    close = asset_path(f"close-{tone}.svg")
+    close_hover = asset_path(f"close-hover-{tone}.svg")
     return f"""
     /* ── surfaces ─────────────────────────────────────────────────────── */
     QMainWindow, QDialog {{
@@ -408,6 +413,29 @@ def stylesheet(palette: Palette) -> str:
         border-bottom-color: {p.surface};
     }}
     QTabWidget > QTabBar::tab:hover:!selected {{ color: {p.text}; }}
+    /* The open files' tabs sit centred over the 3D view, as the toolbar's view
+       controls do above it — not pushed into the corner by the Info panel. */
+    QTabWidget#fileTabs::tab-bar {{ alignment: center; }}
+    QTabWidget#fileTabs::pane {{
+        border: none;
+        border-top: 1px solid {p.border};
+        border-radius: 0px;
+        top: -1px;
+    }}
+    QTabBar::close-button {{
+        image: url("{close}");
+        background: transparent;
+        border: none;
+        border-radius: {_RADIUS_SMALL}px;
+    }}
+    QTabBar::close-button:hover {{
+        image: url("{close_hover}");
+        background: {p.track};
+    }}
+    QTabBar::close-button:pressed {{
+        image: url("{close_hover}");
+        background: {p.border};
+    }}
 
     /* dock tabs */
     QMainWindow > QTabBar {{
@@ -523,6 +551,23 @@ def stylesheet(palette: Palette) -> str:
     QToolBar QToolButton[chip="axis"]:disabled {{
         background-color: {p.track};
         color: {p.text_muted};
+    }}
+    /* a*, b*, c*: the same colours, as an outline — partners of the solid
+       a/b/c chips, not three more of them. */
+    QToolBar QToolButton[chip="axis-reciprocal"] {{
+        background: transparent;
+        border: 2px solid {p.border_strong};
+        border-radius: 5px;
+        padding: 3px 10px;
+    }}
+    QToolBar QToolButton[chip="axis-reciprocal"][axis="a"] {{ border-color: {_AXIS_A}; }}
+    QToolBar QToolButton[chip="axis-reciprocal"][axis="b"] {{ border-color: {_AXIS_B}; }}
+    QToolBar QToolButton[chip="axis-reciprocal"][axis="c"] {{ border-color: {_AXIS_C}; }}
+    QToolBar QToolButton[chip="axis-reciprocal"]:hover {{ background: {p.track}; }}
+    QToolBar QToolButton[chip="axis-reciprocal"]:pressed {{ background: {p.border}; }}
+    QToolBar QToolButton[chip="axis-reciprocal"]:disabled {{
+        border-color: {p.border};
+        background: transparent;
     }}
 
     QToolBar QToolButton[chip="ghost"] {{

@@ -54,7 +54,6 @@ _TWEAKED = RenderSettings(
     polyhedra_edge_width=3.0,
     measure_point_color="#111111",
     measure_line_color="#222222",
-    measure_plane_color="#333333",
     background_color="#444444",
     parallel_projection=False,
     show_orientation_axes=True,

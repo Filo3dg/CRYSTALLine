@@ -49,6 +49,9 @@ class CrystalInfo:
     area: Optional[float] = None  # in-plane cell area for a slab (2D)
     volume: Optional[float] = None
     density: Optional[float] = None
+    # Said when the cell reported is not a conventional cell of any setting of
+    # its group (the primitive cell of a centred lattice, shown as computed).
+    cell_note: Optional[str] = None
 
     def rows(self) -> List[Tuple[str, str]]:
         """(label, value) pairs for display, skipping fields that don't apply.
@@ -66,6 +69,8 @@ class CrystalInfo:
             rows.append(("Layer group", f"{self.layer_group_symbol} (No. {self.layer_group_number})"))
         elif self.space_group_symbol is not None:
             rows.append(("Space group", f"{self.space_group_symbol} (No. {self.space_group_number})"))
+        if self.cell_note is not None:
+            rows.append(("Cell", self.cell_note))
         if self.crystal_system is not None:
             rows.append(("Crystal system", self.crystal_system.capitalize()))
         if self.point_group is not None:
@@ -95,14 +100,22 @@ class CrystalInfo:
 _DIMENSIONALITY = {0: "Molecule (0D)", 1: "Polymer (1D)", 2: "Slab (2D)", 3: "Bulk crystal (3D)"}
 
 
-def analyze(structure: Structure, symprec: float = 1e-2) -> CrystalInfo:
+def analyze(structure: Structure, symprec: float = 1e-2, cell: str = "standard") -> CrystalInfo:
     """Return a :class:`CrystalInfo` for ``structure``.
 
-    For a 3D crystal the reported lattice/volume/density/Z are those of the
-    conventional (crystallographic) cell — what a crystallographer expects in a
-    summary table — regardless of which cell was loaded. A slab (2D) is reported
-    by its layer group and in-plane metrics, never the formal 500 Å ``c`` CRYSTAL
-    fills the vacuum direction with. Non-periodic systems get just the composition.
+    For a 3D crystal, ``cell`` chooses which cell the lattice, volume, density
+    and Z describe:
+
+    * ``"standard"`` (the default) — pymatgen's conventional standard cell,
+      whatever cell was loaded, named by the type's standard symbol;
+    * ``"computed"`` — ``structure``'s own cell, as it stands, with the space
+      group named in the setting that cell is in: a crystal computed in P2₁/n
+      is reported as P2₁/n with its own c and β, not as the P2₁/c cell pymatgen
+      would re-derive (see :mod:`crystalline.core.cell_setting`).
+
+    A slab (2D) is reported by its layer group and in-plane metrics, never the
+    formal 500 Å ``c`` CRYSTAL fills the vacuum direction with, and ``cell``
+    does not apply to it. Non-periodic systems get just the composition.
     """
     ase_atoms = structure.to_ase()
     n_atoms = len(ase_atoms)
@@ -133,6 +146,11 @@ def analyze(structure: Structure, symprec: float = 1e-2) -> CrystalInfo:
 
     pmg = AseAtomsAdaptor().get_structure(ase_atoms)
 
+    if cell == "computed":
+        computed = _analyze_computed(structure, pmg, formula, n_atoms, dimensionality, symprec)
+        if computed is not None:
+            return computed
+
     try:
         sga = SpacegroupAnalyzer(pmg, symprec=symprec)
         conventional = sga.get_conventional_standard_structure()
@@ -162,6 +180,41 @@ def analyze(structure: Structure, symprec: float = 1e-2) -> CrystalInfo:
             alpha=lattice.alpha, beta=lattice.beta, gamma=lattice.gamma,
             volume=pmg.volume, density=float(pmg.density),
         )
+
+
+def _analyze_computed(structure, pmg, formula, n_atoms, dimensionality, symprec):
+    """The crystal described in its own cell, the group named in that cell's setting.
+
+    ``None`` if the symmetry cannot be found at all, so the caller reports what
+    it always has rather than nothing.
+    """
+    from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+
+    from crystalline.core.cell_setting import find_setting
+
+    try:
+        sga = SpacegroupAnalyzer(pmg, symprec=symprec)
+        number = sga.get_space_group_number()
+        type_symbol = sga.get_space_group_symbol()
+        crystal_system = sga.get_crystal_system()
+        point_group = sga.get_point_group_symbol()
+    except Exception:  # noqa: BLE001 - no symmetry: the standard path reports the lattice
+        return None
+    setting = find_setting(structure, symprec)
+    lattice = pmg.lattice
+    _reduced, factor = pmg.composition.get_reduced_composition_and_factor()
+    return CrystalInfo(
+        formula=formula, n_atoms=n_atoms, periodic=True, dimensionality=dimensionality, ndim=3,
+        space_group_symbol=setting.symbol if setting is not None else type_symbol,
+        space_group_number=number,
+        crystal_system=crystal_system,
+        point_group=point_group,
+        z=int(round(factor)),
+        a=lattice.a, b=lattice.b, c=lattice.c,
+        alpha=lattice.alpha, beta=lattice.beta, gamma=lattice.gamma,
+        volume=pmg.volume, density=float(pmg.density),
+        cell_note=None if setting is not None else "as shown — not a conventional cell",
+    )
 
 
 def _analyze_slab(ase_atoms, formula, n_atoms, dimensionality, symprec) -> CrystalInfo:

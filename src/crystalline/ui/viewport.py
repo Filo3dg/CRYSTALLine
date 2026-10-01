@@ -27,6 +27,7 @@ from pyvistaqt import QtInteractor
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import QWidget, QVBoxLayout
 
+from crystalline.core.lattice_planes import reciprocal_lattice
 from crystalline.core.structure import Structure
 from crystalline.ui import wheel_zoom
 from crystalline.ui.drag_controller import install_atom_drag
@@ -86,6 +87,21 @@ class Viewport(QWidget):
         # to the window comes straight back here and recurses until the stack
         # runs out.
         self.interactor.setAcceptDrops(False)
+        # With several files open there are several views, one on screen. VTK
+        # must not draw into one that is not: its window is not mapped, and
+        # rendering there corrupts the OpenGL state the visible one shares — the
+        # second file opened aborted the app on shader errors (pyvistaqt #762).
+        # So a render asked of a hidden view is held until it is shown.
+        self._render_held = False
+        render_now = self.interactor.render
+
+        def render_if_shown(*args, **kwargs):
+            if not self.interactor.isVisible():
+                self._render_held = True
+                return None
+            return render_now(*args, **kwargs)
+
+        self.interactor.render = render_if_shown
         self.renderer = StructureRenderer(self.interactor)
         self._structure: Optional[Structure] = None
         self._reference_cell: Optional[np.ndarray] = None  # original cell, for axis views
@@ -126,6 +142,11 @@ class Viewport(QWidget):
     def eventFilter(self, obj, event) -> bool:
         if obj is self.interactor:
             etype = event.type()
+            if etype == QEvent.Show and self._render_held:
+                # Drawn once it is on screen, on the next turn of the loop, when
+                # its window is mapped: whatever was asked of it while hidden.
+                self._render_held = False
+                QTimer.singleShot(0, self.interactor.render)
             if etype in (QEvent.Enter, QEvent.FocusIn):
                 self._drag.reactivate()
             elif etype == QEvent.MouseButtonRelease:
@@ -216,19 +237,28 @@ class Viewport(QWidget):
         cell = self._active_cell()
         return cell is not None and not np.allclose(cell, 0.0)
 
-    def align_view_along(self, axis: int) -> None:
+    def align_view_along(self, axis: int, reciprocal: bool = False) -> None:
         """Look down a lattice axis (0=a, 1=b, 2=c): that vector points into screen.
 
         The camera is aimed along the chosen lattice vector at the structure's
         centre, with an up direction taken from another lattice vector so the
         crystal sits square-on. Falls back to the world axis if there's no cell.
+
+        ``reciprocal`` looks down a*, b* or c* instead, as VESTA's buttons of
+        those names do: a* is normal to b and c, so the bc face of the cell is
+        seen square-on, undistorted, with b up — where looking down a shows it
+        foreshortened whenever a leans away from that normal (a monoclinic
+        cell's β, a triclinic's α and γ). In an orthogonal cell the two agree.
         """
         if self._structure is None:
             return
         cell = self._active_cell()
-        if cell is not None and not np.allclose(cell[axis], 0.0):
+        direction = None
+        if cell is not None and reciprocal:
+            direction = self._reciprocal_direction(cell, axis)
+        elif cell is not None and not np.allclose(cell[axis], 0.0):
             direction = np.asarray(cell[axis], dtype=float)
-        else:  # non-periodic (or degenerate vector): use the world axis
+        if direction is None:  # non-periodic (or degenerate vector): use the world axis
             direction = np.eye(3)[axis]
             cell = None
 
@@ -248,6 +278,10 @@ class Viewport(QWidget):
     def set_annotations(self, annotations) -> None:
         """Draw the Geometry panel's measurements over the structure."""
         self.renderer.set_annotations(annotations)
+
+    def set_lattice_planes(self, planes, miller_cell=None) -> None:
+        """Draw lattice planes (hkl) — see :meth:`StructureRenderer.set_lattice_planes`."""
+        self.renderer.set_lattice_planes(planes, miller_cell)
 
     def set_symmetry_elements(self, elements, labels: bool = False) -> None:
         """Draw the Symmetry panel's ticked elements over the structure."""
@@ -303,6 +337,29 @@ class Viewport(QWidget):
             if not np.allclose(cell, 0.0):
                 return cell
         return None
+
+    @staticmethod
+    def _reciprocal_direction(cell, axis: int) -> Optional[np.ndarray]:
+        """a*, b* or c* of ``cell`` (0, 1, 2), or ``None`` if the lattice gives none.
+
+        The row of :func:`~crystalline.core.lattice_planes.reciprocal_lattice`,
+        so it keeps its sense in a left-handed cell. A slab or polymer may come
+        with a zero vector for its aperiodic direction; it is replaced by the
+        normal to the other two first, which is the direction it stands for —
+        so c* of a slab is the view straight down onto the layer.
+        """
+        cell = np.array(cell, dtype=float)
+        if cell.shape != (3, 3):
+            return None
+        for index in range(3):
+            if np.linalg.norm(cell[index]) < 1e-8:
+                normal = np.cross(cell[(index + 1) % 3], cell[(index + 2) % 3])
+                if np.linalg.norm(normal) > 1e-8:
+                    cell[index] = normal
+        try:
+            return reciprocal_lattice(cell)[axis]
+        except ValueError:  # no volume: no reciprocal axis
+            return None
 
     @staticmethod
     def _up_for(dir_hat: np.ndarray, cell: Optional[np.ndarray], axis: int) -> np.ndarray:

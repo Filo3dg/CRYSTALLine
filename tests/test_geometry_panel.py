@@ -18,6 +18,20 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def sections_remembered(monkeypatch):
+    """Which sections are open is kept in QSettings: keep the tests' in a dict,
+    out of the user's settings — and the user's out of the tests."""
+    from crystalline.ui import preferences
+
+    stored = {}
+    monkeypatch.setattr(preferences, "section_open",
+                        lambda name, default=True: stored.get(name, default))
+    monkeypatch.setattr(preferences, "set_section_open",
+                        lambda name, open_: stored.__setitem__(name, bool(open_)))
+    return stored
+
+
 def _water() -> Structure:
     s = Structure.empty()
     s.add_atom("O", [0.0, 0.0, 0.0])
@@ -42,7 +56,7 @@ def test_measuring_two_atoms_lists_a_distance(qapp):
     assert emitted and len(emitted[-1]) == 1
 
 
-def test_measuring_three_atoms_gives_an_angle_and_a_plane_on_request(qapp):
+def test_measuring_three_atoms_gives_an_angle(qapp):
     panel = GeometryPanel(_water())
     panel.set_selection([1, 0, 2])
 
@@ -50,8 +64,15 @@ def test_measuring_three_atoms_gives_an_angle_and_a_plane_on_request(qapp):
     assert panel.measurements()[-1].kind == M.ANGLE
     assert panel.measurements()[-1].value == pytest.approx(104.5, abs=0.05)
 
-    panel._measure_plane()  # the same three atoms, as a plane instead
-    assert panel.measurements()[-1].kind == M.PLANE
+
+def test_five_atoms_are_for_a_plane_fit_not_a_measurement(qapp):
+    from ase.build import molecule
+
+    panel = GeometryPanel(Structure.from_ase(molecule("C6H6")))
+    panel.set_selection(range(5))
+    assert not panel._measure_btn.isEnabled()
+    assert "Lattice planes" in panel._hint.text()
+    assert panel._fit_plane_btn.isEnabled()          # where the plane went
 
 
 def test_unticking_a_measurement_hides_it_without_deleting_it(qapp):
@@ -160,8 +181,8 @@ def test_setting_a_per_item_colour(qapp, monkeypatch):
     panel = GeometryPanel(_water())
     panel.set_selection([0, 1])
     panel._measure_selection()  # a distance
-    panel.set_selection([0, 1, 2])
-    panel._measure_plane()      # a plane
+    panel.set_selection([1, 0, 2])
+    panel._measure_selection()  # an angle
     assert [m.color for m in panel.measurements()] == [None, None]  # default (group) colour
 
     emitted = []
@@ -174,7 +195,7 @@ def test_setting_a_per_item_colour(qapp, monkeypatch):
     panel._set_measurement_colour()
 
     assert panel.measurements()[0].color == "#123456"  # the distance is recoloured
-    assert panel.measurements()[1].color is None        # the plane is untouched
+    assert panel.measurements()[1].color is None        # the angle is untouched
     assert emitted[-1][0].color == "#123456"            # and the redraw sees it
 
 
@@ -187,6 +208,42 @@ def test_colour_button_needs_a_selected_measurement(qapp):
     assert not panel._color_btn.isEnabled()  # nothing selected → nothing to recolour
     panel._list.item(0).setSelected(True)
     assert panel._color_btn.isEnabled()
+
+
+def test_the_thickness_slider_sets_every_line_or_the_selected_ones(qapp):
+    panel = GeometryPanel(_water())
+    emitted = []
+    panel.annotations_changed.connect(lambda anns: emitted.append(list(anns)))
+    assert panel.measurement_thickness() == pytest.approx(M.DEFAULT_THICKNESS)
+    panel.set_selection([0, 1])
+    panel._measure_selection()
+    panel.set_selection([1, 0, 2])
+    panel._measure_selection()
+    assert [m.thickness for m in panel.measurements()] == pytest.approx([0.07, 0.07])
+
+    # nothing selected in the list: every line follows, live
+    panel._thickness.slider.setValue(375)          # 0.20 Å: 0.02 + 0.375 × 0.48
+    assert [m.thickness for m in panel.measurements()] == pytest.approx([0.2, 0.2])
+    assert [m.thickness for m in emitted[-1]] == pytest.approx([0.2, 0.2])
+    assert panel._thickness.box.value() == pytest.approx(0.2)      # the box follows
+
+    # one selected: only that one, and picking another shows its value
+    panel._list.item(1).setSelected(True)
+    panel._thickness.box.setValue(0.35)
+    assert [m.thickness for m in panel.measurements()] == pytest.approx([0.2, 0.35])
+    assert panel._thickness.slider.value() == round((0.35 - 0.02) / 0.48 * 1000)
+    panel._list.clearSelection()
+    panel._list.item(0).setSelected(True)
+    assert panel._thickness.box.value() == pytest.approx(0.2)
+    assert [m.thickness for m in panel.measurements()] == pytest.approx([0.2, 0.35])
+
+
+def test_new_measurements_take_the_thickness_shown(qapp):
+    panel = GeometryPanel(_water())
+    panel._thickness.box.setValue(0.3)       # nothing measured yet: sets the next one's
+    panel.set_selection([0, 1])
+    panel._measure_selection()
+    assert panel.measurements()[0].thickness == pytest.approx(0.3)
 
 
 # ── placing an atom at typed coordinates ──────────────────────────────────
@@ -327,8 +384,13 @@ def test_the_position_boxes_do_not_widen_the_dock(qapp):
     """Regression: a box wide enough for "-1000.0000" made the panel's preferred
     width ~465px, and a dock takes its width from that — the Geometry dock came
     out wider than the 3D view beside it. The boxes must not drive it."""
-    with_boxes = GeometryPanel(_nacl()).sizeHint().width()
-    assert with_boxes <= 360  # the panel's own width before the boxes existed
+    from PySide6.QtWidgets import QScrollArea
+
+    panel = GeometryPanel(_nacl())
+    # the panel's own width before the boxes existed, plus the scroll bar the
+    # panel now keeps room for
+    scroll_bar = panel.findChild(QScrollArea).verticalScrollBar().sizeHint().width()
+    assert panel.sizeHint().width() <= 360 + scroll_bar
 
 
 def test_a_typed_position_moves_the_periodic_images_too(qapp):
@@ -372,3 +434,274 @@ def test_a_typed_position_moves_the_periodic_images_too(qapp):
         assert structure.positions[2] == pytest.approx([2.5, 0.0, 0.0])   # untouched
     finally:
         plotter.close()
+
+
+# ── lattice planes (hkl) ──────────────────────────────────────────────────
+def _type_miller(panel, h, k, l):
+    for spin, value in zip(panel._miller_boxes, (h, k, l)):
+        spin.setValue(value)
+
+
+def _plane_panel():
+    structure = _nacl()
+    panel = GeometryPanel(structure)
+    panel.set_miller_cell(np.asarray(structure.cell))
+    drawn = []
+    panel.lattice_planes_changed.connect(lambda planes, cell: drawn.append((planes, cell)))
+    return panel, structure, drawn
+
+
+def test_a_plane_is_drawn_from_its_indices_alone(qapp):
+    panel, structure, drawn = _plane_panel()
+    _type_miller(panel, 1, 1, 1)
+    assert panel._spacing_label.text() == "d 3.256 Å"
+    panel._plane_offset.setValue(0.5)
+    panel._add_plane_btn.click()                   # no atom selected, nothing fitted
+
+    (plane,) = panel.lattice_planes()
+    assert plane.miller == (1, 1, 1) and plane.offset == 0.5 and not plane.family
+    planes, cell = drawn[-1]
+    assert planes == [plane] and np.allclose(cell, structure.cell)
+    assert panel._plane_list.item(0).text() == "(1 1 1) at 0.50 d · d 3.256 Å · 3 atoms"  # Cl on a, b, c at ½
+
+
+def test_a_plane_through_the_selected_atom_passes_through_it(qapp):
+    from crystalline.core import lattice_planes as lp
+
+    panel, structure, _drawn = _plane_panel()
+    _type_miller(panel, 1, 1, 1)
+    assert not panel._plane_atom_btn.isEnabled()   # needs exactly one atom
+    panel.set_selection([1, 2])
+    assert not panel._plane_atom_btn.isEnabled()
+    panel.set_selection([1])
+    assert panel._plane_atom_btn.isEnabled()
+    panel._plane_atom_btn.click()
+
+    (plane,) = panel.lattice_planes()
+    assert plane.offset == pytest.approx(0.5)      # Cl at (½ 0 0): h x + k y + l z = ½
+    assert panel._plane_offset.value() == pytest.approx(0.5)
+    assert 1 in lp.atoms_on(np.asarray(structure.cell), plane, structure.positions)
+
+
+def test_a_family_and_the_atoms_on_it_can_be_selected(qapp):
+    panel, structure, _drawn = _plane_panel()
+    _type_miller(panel, 1, 1, 1)
+    panel._family_check.setChecked(True)
+    panel._plane_offset.setValue(0.5)
+    panel._add_plane_btn.click()
+    assert panel.lattice_planes()[0].family
+    assert "family +0.50 d" in panel._plane_list.item(0).text()
+
+    chosen = []
+    panel.select_atoms_requested.connect(chosen.append)
+    assert not panel._plane_select_btn.isEnabled()  # a plane has to be picked in the list
+    panel._plane_list.item(0).setSelected(True)
+    panel._plane_select_btn.click()
+    assert chosen and {structure.symbols[i] for i in chosen[0]} == {"Cl"} and len(chosen[0]) == 4
+
+
+def test_each_plane_gets_its_own_colour_and_unticking_hides_it(qapp):
+    panel, _structure, drawn = _plane_panel()
+    _type_miller(panel, 1, 0, 0)
+    panel._add_plane_btn.click()
+    _type_miller(panel, 0, 1, 0)
+    panel._add_plane_btn.click()
+    first, second = panel.lattice_planes()
+    assert first.color and second.color and first.color != second.color
+
+    panel._plane_list.item(0).setCheckState(Qt.Unchecked)
+    assert drawn[-1][0] == [second]
+    assert panel.lattice_planes() == [first, second]  # hidden, not deleted
+
+
+def test_recolouring_and_removing_planes(qapp, monkeypatch):
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QColorDialog
+
+    panel, _structure, drawn = _plane_panel()
+    panel._add_plane_btn.click()
+    panel._add_plane_btn.click()
+    panel._plane_list.item(1).setSelected(True)
+    monkeypatch.setattr(QColorDialog, "getColor", staticmethod(lambda *a, **k: QColor("#123456")))
+    panel._plane_colour_btn.click()
+    assert panel.lattice_planes()[1].color == "#123456"
+    assert drawn[-1][0][1].color == "#123456"
+
+    panel._plane_remove_btn.click()
+    assert len(panel.lattice_planes()) == 1
+    panel.clear_lattice_planes()
+    assert panel.lattice_planes() == [] and drawn[-1][0] == []
+
+
+def test_zero_indices_name_no_plane(qapp):
+    panel, _structure, _drawn = _plane_panel()
+    _type_miller(panel, 0, 0, 0)
+    assert not panel._add_plane_btn.isEnabled()
+    assert panel._spacing_label.text() == "d —"
+
+
+def test_hexagonal_planes_are_written_with_four_indices(qapp):
+    from ase.build import bulk
+
+    zinc = bulk("Zn", "hcp", a=2.66, c=4.95)
+    panel = GeometryPanel(Structure.from_ase(zinc))
+    panel.set_miller_cell(zinc.cell[:])
+    _type_miller(panel, 1, 0, 0)
+    assert not panel._i_label.isHidden() and panel._i_label.text() == "i -1"
+    assert "(h k i l)" in panel._plane_hint.text()
+    panel._add_plane_btn.click()
+    assert panel._plane_list.item(0).text().startswith("(1 0 -1 0) at 0.00 d")
+
+    panel.set_miller_cell(np.asarray(_nacl().cell))
+    assert panel._i_label.isHidden()
+
+
+def test_planes_outlive_a_change_of_view_but_not_of_crystal(qapp):
+    panel, structure, drawn = _plane_panel()
+    panel._add_plane_btn.click()
+    bigger = Structure.from_ase(structure.to_ase().repeat((2, 2, 2)))
+    panel.set_structure(bigger)                      # a supercell, say
+    panel.set_miller_cell(np.asarray(structure.cell))
+    assert len(panel.lattice_planes()) == 1 and len(drawn[-1][0]) == 1
+    assert panel._plane_list.item(0).text().endswith("· 16 atoms")  # recounted on the supercell
+    panel.clear_lattice_planes()                     # what a new file does
+    assert panel.lattice_planes() == []
+
+
+def test_a_molecule_offers_no_lattice_planes_but_a_fit(qapp):
+    panel = GeometryPanel(_water())
+    panel.set_miller_cell(None)
+    assert panel._plane_hint.text() == (
+        "A molecule has no lattice planes, but a plane can be fitted to its atoms.")
+    assert not panel._add_plane_btn.isEnabled()
+    assert not panel._miller_boxes[0].isEnabled()
+    panel.set_selection([0, 1, 2])
+    assert panel._fit_plane_btn.isEnabled()
+    panel._fit_plane_btn.click()
+    assert panel._plane_list.item(0).text() == "Fit · rms 0.000 Å · 3 atoms"
+    assert "through 3 atoms" in panel._plane_list.item(0).toolTip()
+
+
+def test_a_plane_fitted_to_atoms_is_kept_as_fitted_and_named_by_its_nearest_hkl(qapp):
+    from crystalline.core import lattice_planes as lp
+
+    panel, structure, drawn = _plane_panel()
+    cell = np.asarray(structure.cell)
+    on_111 = [int(i) for i in lp.atoms_on(cell, lp.LatticePlane((1, 1, 1), 0.5), structure.positions)]
+    assert not panel._fit_plane_btn.isEnabled()
+    panel.set_selection(on_111[:2])
+    assert not panel._fit_plane_btn.isEnabled()          # two atoms fix no plane
+    panel.set_selection(on_111)
+    panel._fit_plane_btn.click()
+
+    (plane,) = panel.lattice_planes()
+    assert isinstance(plane, lp.FittedPlane) and plane.color
+    assert drawn[-1][0] == [plane]
+    assert panel._plane_list.item(0).text() == "Fit ≈ (1 1 1) 0.0° · rms 0.000 Å · 3 atoms"
+    tip = panel._plane_list.item(0).toolTip()
+    assert "through 3 atoms" in tip and "(1 1 1), 0.0° away" in tip
+
+
+def test_a_fitted_plane_selects_the_atoms_on_it_and_takes_the_opacity(qapp):
+    panel, structure, drawn = _plane_panel()
+    panel._plane_opacity.slider.setValue(600)
+    panel.set_selection([0, 1, 2])
+    panel._fit_plane_btn.click()
+    assert panel.lattice_planes()[0].opacity == pytest.approx(0.6)
+
+    chosen = []
+    panel.select_atoms_requested.connect(chosen.append)
+    panel._plane_list.item(0).setSelected(True)
+    panel._plane_select_btn.click()
+    assert chosen and set(chosen[0]) >= {0, 1, 2}
+
+
+def test_measure_offers_no_plane_fit_any_more(qapp):
+    panel = GeometryPanel(_water())
+    assert not hasattr(panel, "_plane_btn")
+    assert "plane" not in panel._measure_btn.toolTip().split(".")[0]
+
+
+def test_the_opacity_slider_sets_every_plane_or_the_selected_ones(qapp):
+    panel, _structure, drawn = _plane_panel()
+    assert panel.plane_opacity() == pytest.approx(0.35)
+    _type_miller(panel, 1, 0, 0)
+    panel._add_plane_btn.click()
+    _type_miller(panel, 0, 1, 0)
+    panel._add_plane_btn.click()
+
+    # nothing selected in the list: every plane follows the slider, live
+    panel._plane_opacity.slider.setValue(700)
+    assert [p.opacity for p in panel.lattice_planes()] == pytest.approx([0.7, 0.7])
+    assert [p.opacity for p in drawn[-1][0]] == pytest.approx([0.7, 0.7])
+    assert panel._plane_opacity.box.value() == pytest.approx(0.7)   # the box follows
+
+    # one selected: only that one
+    panel._plane_list.item(1).setSelected(True)
+    panel._plane_opacity.box.setValue(0.15)
+    assert [p.opacity for p in panel.lattice_planes()] == pytest.approx([0.7, 0.15])
+    assert panel._plane_opacity.slider.value() == 150
+
+
+def test_picking_a_plane_shows_its_opacity_and_new_planes_take_the_slider(qapp):
+    panel, _structure, drawn = _plane_panel()
+    panel._plane_opacity.slider.setValue(900)
+    panel._add_plane_btn.click()
+    assert panel.lattice_planes()[0].opacity == pytest.approx(0.9)   # added at the value shown
+    panel._plane_opacity.slider.setValue(200)
+    panel._add_plane_btn.click()
+    assert [p.opacity for p in panel.lattice_planes()] == pytest.approx([0.2, 0.2])
+
+    panel._plane_list.item(0).setSelected(True)
+    panel._plane_opacity.box.setValue(0.55)
+    count = len(drawn)
+    panel._plane_list.clearSelection()
+    panel._plane_list.item(1).setSelected(True)          # shows 0.2, changes nothing
+    assert panel._plane_opacity.slider.value() == 200
+    assert len(drawn) == count
+    assert [p.opacity for p in panel.lattice_planes()] == pytest.approx([0.55, 0.2])
+
+
+def test_the_opacity_row_waits_for_a_lattice_or_a_fit(qapp):
+    panel = GeometryPanel(_water())
+    panel.set_miller_cell(None)
+    assert not panel._plane_opacity.isEnabled()
+    panel.set_selection([0, 1, 2])
+    panel._fit_plane_btn.click()
+    assert panel._plane_opacity.isEnabled()
+
+
+# ── sections ──────────────────────────────────────────────────────────────
+def test_the_panel_is_three_sections_that_fold_and_are_remembered(qapp, sections_remembered):
+    panel = GeometryPanel(_water())
+    titles = [section.header.text() for section in panel._sections.values()]
+    assert titles == ["MEASURE", "LATTICE PLANES", "ATOMS"]
+    assert all(panel.section_open(key) for key in panel._sections)   # open the first time
+
+    panel._sections["atoms"].header.click()
+    assert not panel.section_open("atoms") and panel._sections["atoms"].body.isHidden()
+    assert sections_remembered == {"geometry/atoms": False}
+
+    other = GeometryPanel(_water())                  # another tab's, or the next session's
+    assert not other.section_open("atoms") and other.section_open("measure")
+
+
+def test_a_panel_shown_again_takes_up_the_sections_as_last_left(qapp):
+    """Each tab has its own panel: folding a section in one, then switching to
+    another tab, finds it folded there too."""
+    first, second = GeometryPanel(_water()), GeometryPanel(_water())
+    first._sections["measure"].header.click()        # folded in the tab on screen
+    assert second.section_open("measure")            # the hidden tab's has not been shown since
+    second.show()
+    qapp.processEvents()
+    assert not second.section_open("measure")
+    second.hide()
+
+
+def test_folding_a_section_never_widens_the_dock(qapp, sections_remembered):
+    sections_remembered.update({"geometry/measure": False, "geometry/planes": False,
+                                "geometry/atoms": False})
+    folded = GeometryPanel(_nacl())
+    sections_remembered.clear()
+    unfolded = GeometryPanel(_nacl())
+    assert folded.minimumSizeHint().width() == unfolded.minimumSizeHint().width()

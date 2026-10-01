@@ -19,21 +19,26 @@ A CRYSTAL deck is three (or four) ``END``-terminated blocks:
 
 Design choices for this first cut (see the module's tests for the exact decks):
 
-* **Geometry is derived, not asked for.** The asymmetric unit is found with the
-  same pymatgen ``SpacegroupAnalyzer`` that ``loader.save_structure_gui`` uses,
-  so the space group and cell agree with what the ``.gui`` writer would produce.
-  We symmetrise the *conventional standard* cell (not the primitive input), so a
-  cubic crystal prints one ``a`` and fractional coordinates in the standard
-  setting with flags ``0 0 0``. Any failure falls back to a ``P1`` listing of
-  every atom — a valid deck, never a hard error (mirroring the ``.gui`` writer).
+* **Geometry is derived, not asked for.** A 3D crystal is written in one of two
+  cells (``GeometryOptions.cell_setting``): pymatgen's conventional standard
+  cell, or the cell as computed, in whichever setting of its group that cell is
+  in (P2₁/n stays P2₁/n). Either way the setting is named the way CRYSTAL reads
+  it — by number (``IFLAG=0``) for the standard setting, by its Hermann–Mauguin
+  symbol (``IFLAG=1``) otherwise, with ``IFSO`` matching the origin choice the
+  coordinates use and ``IFHR`` the rhombohedral axes — and it is only written
+  once its own operations have been shown to rebuild the crystal from the
+  asymmetric unit (:mod:`crystalline.core.cell_setting`). What cannot be
+  written that way falls back: the computed cell to the standard one, the
+  standard one to a ``P1`` listing of every atom — a valid deck, never a hard
+  error.
 * **Scope.** Every dimensionality is written, each with its own coordinate
   convention (3D fractional; 2D ``x,y`` fractional and ``z`` in Å; 1D ``x``
   fractional and ``y,z`` in Å; 0D all Å) and its own minimal set of lattice
-  parameters. Symmetry reduction to the asymmetric unit is applied to 3D
-  crystals; slabs and polymers are written in their trivial group with every
-  atom listed, because the layer/rod-group orbits needed to reduce them are not
-  available here. Cells whose periodic directions are not already the ones
-  CRYSTAL expects (slab in ``xy``, polymer along ``x``) are rotated into place.
+  parameters. A slab is written in its layer group, checked the same way
+  (:mod:`crystalline.core.slab_symmetry`); a polymer in rod group 1 with every
+  atom listed, since spglib has no rod groups. Cells whose periodic directions
+  are not already the ones CRYSTAL expects (slab in ``xy``, polymer along
+  ``x``) are rotated into place.
 * **Basis sets** are CRYSTAL's internal libraries via ``BASISSET`` (all-electron,
   so plain atomic numbers, no ECP offset).
 
@@ -284,6 +289,13 @@ class GeometryOptions:
     kept_rotations: Tuple[tuple, ...] = ()
     supercell: Optional[Sequence[Sequence[int]]] = None  # SUPERCEL expansion matrix
     supercell_noshift: bool = False  # NOSHIFT: keep the origin where it is
+    # Which cell a 3D crystal is written in: "standard" — pymatgen's
+    # conventional standard cell, the long-standing behaviour — or "computed",
+    # the cell exactly as held, in whichever setting of its group it is (a
+    # P2₁/n crystal stays P2₁/n instead of becoming P2₁/c with another c and
+    # β). See :mod:`crystalline.core.cell_setting`. Slabs, polymers and
+    # molecules have no choice to make and ignore it.
+    cell_setting: str = "standard"
 
 
 @dataclass
@@ -587,7 +599,7 @@ def build_input(structure: Structure, spec: Optional[CrystalInputSpec] = None) -
     """Return a complete CRYSTAL ``.d12`` deck (a string ending in a newline).
 
     Raises :class:`CrystalInputError` for an empty structure, a missing basis
-    name, or a dimensionality not yet supported (1D/2D).
+    name, or a combination of options CRYSTAL would reject.
     """
     spec = spec or CrystalInputSpec()
     if len(structure) == 0:
@@ -813,31 +825,129 @@ def _polymer_frame(a_vec: np.ndarray):
 
 
 def _crystal_body(structure: Structure, opts: GeometryOptions) -> List[str]:
-    """Block-1 body for a 3D crystal: flags, space group, cell, asymmetric unit.
+    """Block-1 body for a 3D crystal: flags, space group, cell, asymmetric unit."""
+    return _crystal_geometry(structure, opts)[0]
 
-    Uses the conventional standard cell so the printed parameters and fractional
-    coordinates are in CRYSTAL's default setting (flags ``0 0 0``). On any
-    symmetry-analysis failure — or when the user turns symmetry off — falls back
-    to ``P1`` with every atom listed.
+
+def geometry_note(structure: Structure, opts: Optional[GeometryOptions] = None) -> str:
+    """One line saying which cell and setting the geometry block is written in.
+
+    For the builder to show beside its preview: the two cell choices can give
+    decks that look nothing alike for the same crystal, and a choice that could
+    not be honoured has to say what was written instead. Empty for a slab,
+    polymer or molecule, where there is no choice to report on.
+    """
+    opts = opts or GeometryOptions()
+    if len(structure) == 0 or int(sum(bool(p) for p in structure.pbc)) != 3:
+        return ""
+    try:
+        return _crystal_geometry(structure, opts)[1]
+    except Exception:  # noqa: BLE001 - a note is a nicety; build_input reports real errors
+        return ""
+
+
+def _crystal_geometry(structure: Structure, opts: GeometryOptions) -> Tuple[List[str], str]:
+    """The block-1 body of a 3D crystal, and a note on what it was written in.
+
+    In the cell the options ask for — the computed one, as held, or pymatgen's
+    standard one — named the way CRYSTAL reads that cell's setting (see
+    :mod:`crystalline.core.cell_setting`), and only once its own operations
+    have been shown to rebuild the crystal from the atoms written. Anything
+    that cannot be written that way falls back: the computed cell to the
+    standard one, the standard one to ``P1`` with every atom listed, which is
+    always true.
     """
     from pymatgen.io.ase import AseAtomsAdaptor
+
+    from crystalline.core import cell_setting
 
     pmg = AseAtomsAdaptor().get_structure(structure.to_ase())
 
     if opts.use_symmetry and opts.kept_rotations:
         body = _reduced_crystal_body(structure, opts)
         if body is not None:
-            return body
+            return body, (f"Reduced symmetry, No. {body[1]}, written in the standard "
+                          f"cell (the cell choice does not apply to a reduction).")
         # A reduction that cannot be written is not quietly replaced by the full
         # symmetry — that would silently hand back the constraint the user asked
         # to be rid of. Every atom, in group 1, is the honest fallback.
-        return _p1_crystal_body(pmg)
-    if opts.use_symmetry:
-        try:
-            return _symmetric_crystal_body(pmg, opts.symprec)
-        except Exception:  # noqa: BLE001 - symmetry undeterminable: fall back to P1
-            pass
-    return _p1_crystal_body(pmg)
+        return _p1_crystal_body(pmg), ("The reduced symmetry cannot be written in "
+                                       "this cell: every atom is listed in P1.")
+    if not opts.use_symmetry:
+        return _p1_crystal_body(pmg), "Symmetry off: every atom is listed in P1."
+
+    fallback = ""
+    if opts.cell_setting == cell_setting.COMPUTED:
+        written = _setting_body(structure, opts.symprec)
+        if written is not None:
+            body, setting = written
+            note = f"Cell as computed: {setting.label} (No. {setting.number})"
+            if setting.shifted:
+                shift = ", ".join(f"{v:+.4f}" for v in setting.origin_shift)
+                note += f", origin moved by ({shift}) to the setting's own"
+            return body, note + "."
+        fallback = ("The computed cell is not a conventional cell of its space group "
+                    "in a setting CRYSTAL can name, so the standard cell is written. ")
+
+    standard = cell_setting.standard_cell(structure, opts.symprec)
+    written = None if standard is None else _setting_body(standard, opts.symprec,
+                                                          representatives=True)
+    if written is not None:
+        body, setting = written
+        return body, fallback + (f"Standard setting: {setting.label} "
+                                 f"(No. {setting.number}).")
+    return _p1_crystal_body(pmg), fallback + ("The symmetry could not be written in a "
+                                              "setting CRYSTAL can name: every atom is "
+                                              "listed in P1.")
+
+
+def _setting_body(structure: Structure, symprec: float, representatives: bool = False):
+    """``(body, setting)`` writing ``structure``'s own cell, or ``None`` if it can't be.
+
+    ``representatives`` takes the atom of each orbit that pymatgen's symmetrised
+    structure picks — what the standard cell has always been written with, so
+    its decks keep their familiar coordinates — rather than the first one met.
+    """
+    from pymatgen.core import Lattice
+
+    from crystalline.core import cell_setting
+
+    setting = cell_setting.find_setting(structure, symprec)
+    if setting is None:
+        return None
+    record = setting.crystal_record()
+    if record is None:
+        return None
+    numbers, coordinates = None, None
+    if representatives:
+        numbers, coordinates = _pymatgen_representatives(structure, symprec, setting)
+    if numbers is None:
+        numbers, coordinates = cell_setting.asymmetric_unit(setting, structure, symprec)
+    if not cell_setting.regenerates(setting, structure, numbers, coordinates, symprec):
+        return None
+    lattice = Lattice(np.asarray(structure.cell, dtype=float))
+    flags, group = record
+    lines = [flags, group,
+             " ".join(f"{v:.6f}" for v in setting.lattice_parameters(lattice)),
+             str(len(numbers))]
+    for z, position in zip(numbers, coordinates):
+        lines.append(_atom_line(int(z), position))
+    return lines, setting
+
+
+def _pymatgen_representatives(structure: Structure, symprec: float, setting):
+    """One atom per orbit as pymatgen's symmetrised structure chooses them."""
+    try:
+        from pymatgen.io.ase import AseAtomsAdaptor
+        from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+
+        pmg = AseAtomsAdaptor().get_structure(structure.to_ase())
+        orbits = SpacegroupAnalyzer(pmg, symprec=symprec).get_symmetrized_structure().equivalent_sites
+        numbers = np.asarray([orbit[0].specie.Z for orbit in orbits], dtype=int)
+        coordinates = np.asarray([orbit[0].frac_coords for orbit in orbits], dtype=float)
+        return numbers, coordinates + np.asarray(setting.origin_shift)
+    except Exception:  # noqa: BLE001 - the setting's own orbits will do
+        return None, None
 
 
 def _reduced_crystal_body(structure: Structure, opts: GeometryOptions):
@@ -882,26 +992,6 @@ def _system_of(number: int) -> str:
         if number <= limit:
             return system
     return "triclinic"
-
-
-def _symmetric_crystal_body(pmg, symprec: float) -> List[str]:
-    from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-
-    # Symmetrise the *conventional* cell so orbits and parameters are in the
-    # standard setting — the primitive input cell would give a rhombohedral
-    # NaCl, not the cubic one CRYSTAL expects with a single "a".
-    conventional = SpacegroupAnalyzer(pmg, symprec=symprec).get_conventional_standard_structure()
-    sga = SpacegroupAnalyzer(conventional, symprec=symprec)
-    number = sga.get_space_group_number()
-    system = sga.get_crystal_system()
-    sym = sga.get_symmetrized_structure()
-
-    lines = ["0 0 0", str(number), _lattice_line(system, sym.lattice)]
-    orbits = sym.equivalent_sites
-    lines.append(str(len(orbits)))
-    for orbit in orbits:
-        lines.append(_atom_line(orbit[0].specie.Z, orbit[0].frac_coords))
-    return lines
 
 
 def _p1_crystal_body(pmg) -> List[str]:

@@ -390,6 +390,28 @@ def test_a_logarithmic_slider_refuses_bounds_it_cannot_take_a_log_of(qapp):
         slider_row(section, "bad", 1.0, 0.0, 10.0, 0.1, logarithmic=True)
 
 
+def test_a_slider_box_keeps_its_pair_in_step_and_can_show_a_value_quietly(qapp):
+    """Either half moves the other and reports the box's value once; showing a
+    value with notify=False (a row just picked) moves both and reports nothing."""
+    from crystalline.ui.panels.controls import SliderBox
+
+    pair = SliderBox(0.35, 0.0, 1.0, 0.05)
+    heard = []
+    pair.changed.connect(heard.append)
+
+    pair.slider.setValue(700)
+    assert pair.value() == pytest.approx(0.7) and heard == [pytest.approx(0.7)]
+    pair.box.setValue(0.2)
+    assert pair.slider.value() == 200 and heard[-1] == pytest.approx(0.2)
+
+    heard.clear()
+    pair.set_value(0.55, notify=False)
+    assert pair.value() == pytest.approx(0.55) and pair.slider.value() == 550
+    assert heard == []
+    pair.set_value(0.1)
+    assert heard == [pytest.approx(0.1)]
+
+
 def test_the_range_slider_keeps_its_handles_in_order(qapp):
     """Two independent boxes can be put the wrong way round; a span cannot."""
     from crystalline.ui.widgets import RangeSlider
@@ -552,3 +574,26 @@ def test_the_spin_arrows_are_drawn_and_themed(qapp):
     assert "chevron-up-dark.svg" in light_sheet    # a dark glyph on a light field
     assert "chevron-up-light.svg" in dark_sheet    # and the reverse
     assert "QSpinBox::up-arrow" in light_sheet
+
+
+def test_a_tab_close_button_is_a_quiet_glyph_in_the_theme_s_own_tone():
+    """The style's own × sits on a red button on the current tab — loud on a
+    bar of file names. It is drawn in the muted text tone instead, per theme."""
+    import os
+
+    from crystalline.resources import asset_path
+
+    for tone in ("dark", "light"):
+        for state in ("close", "close-hover"):
+            assert os.path.isfile(asset_path(f"{state}-{tone}.svg"))
+    light_sheet = theme.stylesheet(theme.LIGHT)
+    dark_sheet = theme.stylesheet(theme.DARK)
+    assert "QTabBar::close-button" in light_sheet
+    assert "close-dark.svg" in light_sheet and "close-hover-dark.svg" in light_sheet
+    assert "close-light.svg" in dark_sheet and "close-hover-light.svg" in dark_sheet
+    for tone in ("dark", "light"):
+        for state in ("close", "close-hover"):
+            with open(asset_path(f"{state}-{tone}.svg")) as handle:
+                stroke = re.search(r'stroke="(#[0-9a-fA-F]{6})"', handle.read()).group(1)
+            red, green, blue = (int(stroke[i:i + 2], 16) for i in (1, 3, 5))
+            assert max(red, green, blue) - min(red, green, blue) < 0x20, stroke  # a grey

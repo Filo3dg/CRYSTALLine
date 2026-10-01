@@ -92,11 +92,11 @@ class RenderSettings:
     polyhedra_min_vertices: int = 4  # only draw around atoms with >= this many bonds
     polyhedra_edge_width: float = 1.5  # screen pixels; 0 draws no outline
 
-    # geometry-measurement overlays (Geometry panel): dot markers, distance/angle
-    # paths, and least-squares plane patches — each independently coloured.
+    # geometry-measurement overlays (Geometry panel): dot markers and
+    # distance/angle paths, each independently coloured. A plane fitted to atoms
+    # is a lattice plane now, coloured in the Geometry panel's plane list.
     measure_point_color: str = "#ff7f0e"  # dot markers
     measure_line_color: str = "#ff7f0e"   # distance / angle / dihedral paths
-    measure_plane_color: str = "#1f77b4"  # least-squares plane patches
 
     # point-symmetry elements (Point symmetry panel), drawn with the same three
     # shapes as the measurements but in their own colours, so an axis is never

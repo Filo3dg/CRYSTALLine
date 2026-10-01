@@ -1,4 +1,4 @@
-"""The a/b/c view-alignment buttons.
+"""The a/b/c and a*/b*/c* view-alignment buttons.
 
 Looking down a lattice axis needs an up direction, and which one is chosen is
 what makes the three views agree or disagree with each other. Taking the other
@@ -72,3 +72,64 @@ def test_without_a_cell_the_up_vector_comes_from_a_world_axis():
 
         assert np.linalg.norm(up) == pytest.approx(1.0)
         assert float(np.dot(up, direction)) == pytest.approx(0.0, abs=1e-12)
+
+
+
+# ── a*, b*, c* ────────────────────────────────────────────────────────────
+_MONOCLINIC = np.array([[8.24, 0.0, 0.0], [0.0, 13.45, 0.0],
+                        [8.967 * np.cos(np.radians(105.48)), 0.0,
+                         8.967 * np.sin(np.radians(105.48))]])
+_TRICLINIC = np.array([[5.1, 0.0, 0.0], [1.3, 6.1, 0.0], [0.9, 1.7, 6.6]])
+
+
+@pytest.mark.parametrize("cell", [_MONOCLINIC, _TRICLINIC, _HEXAGONAL],
+                         ids=["monoclinic", "triclinic", "hexagonal"])
+def test_a_star_is_normal_to_b_and_c_and_on_a_s_side(cell):
+    for axis in range(3):
+        star = Viewport._reciprocal_direction(cell, axis)
+        others = [cell[(axis + 1) % 3], cell[(axis + 2) % 3]]
+        assert all(abs(float(np.dot(star, v))) < 1e-10 for v in others)
+        assert float(np.dot(star, cell[axis])) == pytest.approx(1.0)   # a*·a = 1
+    assert np.allclose(np.stack([Viewport._reciprocal_direction(cell, i) for i in range(3)]),
+                       np.linalg.inv(cell).T)
+
+
+def test_in_an_orthogonal_cell_a_star_is_just_a():
+    for axis in range(3):
+        star = Viewport._reciprocal_direction(_CUBIC, axis)
+        assert np.allclose(star / np.linalg.norm(star), np.eye(3)[axis])
+
+
+def test_a_left_handed_cell_keeps_the_sense_of_its_axes():
+    left = _MONOCLINIC[[1, 0, 2]]           # a and b swapped: det < 0
+    for axis in range(3):
+        assert float(np.dot(Viewport._reciprocal_direction(left, axis), left[axis])) > 0
+
+
+@pytest.mark.parametrize("cell", [_MONOCLINIC, _TRICLINIC], ids=["monoclinic", "triclinic"])
+def test_down_a_star_the_bc_face_is_seen_square_on(cell):
+    """What the button is for: b straight up, and c lying in the screen — both
+    at their true length, where looking down a foreshortens the face."""
+    star = Viewport._reciprocal_direction(cell, 0)
+    view = star / np.linalg.norm(star)
+    up = Viewport._up_for(view, cell, 0)
+    assert np.allclose(up, cell[1] / np.linalg.norm(cell[1]))       # b is up, exactly
+    assert abs(float(np.dot(cell[2], view))) < 1e-10               # c is in the screen
+    right = np.cross(view, up)
+    assert float(np.dot(cell[2], right)) > 0                         # and to the right
+    # while down a, c is tipped out of the screen in a non-orthogonal cell
+    along_a = cell[0] / np.linalg.norm(cell[0])
+    assert abs(float(np.dot(cell[2], along_a))) > 0.1
+
+
+def test_c_star_of_a_slab_with_no_c_is_the_view_onto_the_layer():
+    slab = np.array([[4.0, 0.0, 0.0], [2.0, 3.5, 0.0], [0.0, 0.0, 0.0]])
+    star = Viewport._reciprocal_direction(slab, 2)
+    assert np.allclose(star / np.linalg.norm(star), [0.0, 0.0, 1.0])
+    a_star = Viewport._reciprocal_direction(slab, 0)
+    assert abs(float(np.dot(a_star, slab[1]))) < 1e-10 and abs(a_star[2]) < 1e-12
+
+
+def test_a_lattice_with_no_volume_gives_no_reciprocal_axis():
+    flat = np.array([[4.0, 0.0, 0.0], [8.0, 0.0, 0.0], [0.0, 0.0, 5.0]])
+    assert Viewport._reciprocal_direction(flat, 0) is None

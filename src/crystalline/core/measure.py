@@ -1,4 +1,4 @@
-"""Geometry measurements on a structure: distances, angles, dihedrals, planes.
+"""Geometry measurements on a structure: positions, distances, angles, dihedrals.
 
 Measurements are taken on the atoms **as drawn**. The displayed cell is usually
 boundary-completed, so an atom that straddles the boundary appears at every cell
@@ -8,6 +8,10 @@ convention is applied — pick the image you can see.
 
 Qt-free and free of the renderer, so the maths is unit-tested on its own; the
 panel turns a selection into a :class:`Measurement` and the renderer draws it.
+
+A plane through the selection is not a measurement here: it is fitted with the
+lattice planes (:func:`crystalline.core.lattice_planes.fit_plane`), listed and
+drawn with them.
 """
 
 from __future__ import annotations
@@ -18,7 +22,11 @@ from typing import Optional, Sequence, Tuple
 import numpy as np
 
 # What a selection of N atoms measures.
-DISTANCE, ANGLE, DIHEDRAL, PLANE, POINT = "distance", "angle", "dihedral", "plane", "point"
+DISTANCE, ANGLE, DIHEDRAL, POINT = "distance", "angle", "dihedral", "point"
+
+# How thick (Å, the diameter) the line of a distance, angle or dihedral is drawn
+# unless told otherwise: thin enough to follow a bond without hiding it.
+DEFAULT_THICKNESS = 0.07
 
 _DEGREES = "°"
 _ANGSTROM = "Å"
@@ -30,8 +38,8 @@ class Measurement:
 
     ``points`` are the cartesian positions the measurement was taken on, kept so
     the renderer can draw it without re-reading the structure (and so it stays
-    meaningful if the selection changes). ``value`` is in Å for a distance,
-    degrees for an angle/dihedral, and the RMS deviation (Å) for a plane fit.
+    meaningful if the selection changes). ``value`` is in Å for a distance and
+    in degrees for an angle or a dihedral.
     """
 
     kind: str
@@ -39,12 +47,11 @@ class Measurement:
     value: float
     label: str
     points: np.ndarray = field(default_factory=lambda: np.empty((0, 3)))
-    # Planes only: a point on the plane and its unit normal.
-    origin: Optional[np.ndarray] = None
-    normal: Optional[np.ndarray] = None
     # Optional per-item colour ("#rrggbb"); ``None`` uses the type's default from
-    # RenderSettings (measure_point/line/plane_color).
+    # RenderSettings (measure_point/line_color).
     color: Optional[str] = None
+    # How thick (Å) its line is drawn. A point is a dot, and has no line.
+    thickness: float = DEFAULT_THICKNESS
 
     @property
     def unit(self) -> str:
@@ -52,16 +59,12 @@ class Measurement:
             return _ANGSTROM
         if self.kind in (ANGLE, DIHEDRAL):
             return _DEGREES
-        if self.kind == PLANE:
-            return _ANGSTROM  # RMS deviation of the fitted atoms
         return ""
 
     def summary(self) -> str:
         """``"Si(1)–O(2)   1.612 Å"``-style text for the measurement list."""
         if self.kind == POINT:
             return self.label
-        if self.kind == PLANE:  # the value is an out-of-plane deviation, so say so
-            return f"{self.label}   rms {self.value:.3f} {self.unit}"
         return f"{self.label}   {self.value:.3f} {self.unit}".rstrip()
 
 
@@ -111,33 +114,13 @@ def dihedral(positions: np.ndarray, i: int, j: int, k: int, m: int) -> float:
     return float(np.degrees(np.arctan2(y, x)))
 
 
-def plane(positions: np.ndarray, indices: Sequence[int]) -> Tuple[np.ndarray, np.ndarray, float]:
-    """Least-squares plane through ≥3 atoms: ``(centroid, unit normal, rms)``.
-
-    The normal is the singular vector of least variance (SVD of the centred
-    coordinates), and ``rms`` is the root-mean-square out-of-plane deviation —
-    0 for exactly coplanar atoms, and a measure of planarity otherwise. Its sign
-    is fixed so the normal's largest component is positive, keeping the result
-    stable from call to call.
-    """
-    p = np.asarray(positions, dtype=float)[list(indices)]
-    centroid = p.mean(axis=0)
-    _u, _s, vh = np.linalg.svd(p - centroid)
-    normal = np.asarray(vh[2], dtype=float)
-    if normal[int(np.argmax(np.abs(normal)))] < 0:
-        normal = -normal
-    rms = float(np.sqrt(np.mean(((p - centroid) @ normal) ** 2)))
-    return centroid, normal, rms
-
-
 def measure(
     positions: np.ndarray, symbols: Sequence[str], indices: Sequence[int]
 ) -> Optional[Measurement]:
     """Measure whatever a selection of atoms defines, or ``None`` if it defines nothing.
 
-    1 atom → its position, 2 → a distance, 3 → an angle, 4 → a dihedral. Five or
-    more can only sensibly be a plane fit, so that is what they give; use
-    :func:`measure_plane` to force a plane for 3 or 4 atoms instead.
+    1 atom → its position, 2 → a distance, 3 → an angle, 4 → a dihedral. No
+    atoms, or more than four, measure nothing.
     """
     indices = [int(i) for i in indices]
     if len(indices) == 1:
@@ -154,8 +137,6 @@ def measure(
         value = dihedral(positions, *indices)
         return Measurement(DIHEDRAL, tuple(indices), value, _label(symbols, indices, "–"),
                            points=np.asarray(positions, dtype=float)[indices])
-    if len(indices) > 4:
-        return measure_plane(positions, symbols, indices)
     return None
 
 
@@ -166,25 +147,7 @@ def measure_point(positions: np.ndarray, symbols: Sequence[str], index: int) -> 
     return Measurement(POINT, (int(index),), float("nan"), label, points=p.reshape(1, 3))
 
 
-def measure_plane(
-    positions: np.ndarray, symbols: Sequence[str], indices: Sequence[int]
-) -> Optional[Measurement]:
-    """Fit a plane through ≥3 atoms (``None`` for fewer)."""
-    indices = [int(i) for i in indices]
-    if len(indices) < 3:
-        return None
-    centroid, normal, rms = plane(positions, indices)
-    label = (
-        f"Plane {_label(symbols, indices, ', ')}"
-        f"  n=({normal[0]:.2f}, {normal[1]:.2f}, {normal[2]:.2f})"
-    )
-    return Measurement(
-        PLANE, tuple(indices), rms, label,
-        points=np.asarray(positions, dtype=float)[indices], origin=centroid, normal=normal,
-    )
-
-
-# Beyond this, a plane's atom list is abbreviated so the row stays readable.
+# Beyond this, an atom list is abbreviated so the row stays readable.
 _LABEL_MAX_ATOMS = 4
 
 
@@ -202,25 +165,24 @@ def selection_hint(count: int) -> str:
         0: "Select atoms in the 3D view to measure them.",
         1: "1 atom: position. Select 2 for a distance.",
         2: "2 atoms: distance. Select 3 for an angle.",
-        3: "3 atoms: angle (or a plane).",
-        4: "4 atoms: dihedral (or a plane).",
-    }.get(count, f"{count} atoms: plane fit.")
+        3: "3 atoms: angle.",
+        4: "4 atoms: dihedral.",
+    }.get(count, f"{count} atoms: select 4 or fewer to measure, or fit a plane "
+                 f"to them under Lattice planes.")
 
 
 __all__ = [
+    "DEFAULT_THICKNESS",
     "Measurement",
     "DISTANCE",
     "ANGLE",
     "DIHEDRAL",
-    "PLANE",
     "POINT",
     "distance",
     "angle",
     "angle_between",
     "dihedral",
-    "plane",
     "measure",
     "measure_point",
-    "measure_plane",
     "selection_hint",
 ]

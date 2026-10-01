@@ -14,7 +14,7 @@ menu before the toolbar's ``_update_view_actions`` call.
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QAction, QActionGroup, QIcon
+from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from PySide6.QtWidgets import QLabel, QToolBar, QToolButton, QWidget
 
 from crystalline.core.cells import CellView
@@ -89,6 +89,13 @@ CHIP_ICON = QSize(22, 16)
 CHIP_SIZE = QSize(40, 26)
 
 
+def theme_axis_colour(axis: int) -> str:
+    """The toolbar colour of lattice axis 0, 1 or 2 (a red, b green, c blue)."""
+    from crystalline.ui import theme
+
+    return theme.AXIS_COLOURS[axis]
+
+
 def style_chip(button, kind: str, axis: str = "") -> None:
     """Give a toolbar button its shape: one size and one icon size, everywhere."""
     button.setProperty("chip", kind)
@@ -158,10 +165,16 @@ def build_menus(window) -> None:
 def _build_file_menu(window) -> None:
     file_menu = window.menuBar().addMenu("&File")
 
+    # Every file opens in a tab of its own; several can be chosen at once.
     open_action = QAction("Open…", window)
     open_action.setShortcut("Ctrl+O")
     open_action.triggered.connect(window._open_file)
     file_menu.addAction(open_action)
+
+    close_tab = QAction("Close tab", window)
+    close_tab.setShortcuts(QKeySequence.Close)  # Ctrl+W (and Ctrl+F4), ⌘W on macOS
+    close_tab.triggered.connect(window._close_current_tab)
+    file_menu.addAction(close_tab)
 
     # Importing atoms only makes sense once there's a structure to add them to —
     # enabled by ``_update_import_action`` after a file is opened.
@@ -445,11 +458,32 @@ def _build_view_menu(window) -> None:
     restore_all.triggered.connect(window._restore_all_panels)
     panels_menu.addAction(restore_all)
 
+    # Between open files. The platform's own keys for "next document":
+    # Ctrl+Tab on Windows and Linux, ⌘⇧] / ⌘⇧[ on macOS.
+    view_menu.addSeparator()
+    next_tab = QAction("Next tab", window)
+    next_tab.setShortcuts(QKeySequence.NextChild)
+    next_tab.triggered.connect(window._next_tab)
+    view_menu.addAction(next_tab)
+    previous_tab = QAction("Previous tab", window)
+    previous_tab.setShortcuts(QKeySequence.PreviousChild)
+    previous_tab.triggered.connect(window._previous_tab)
+    view_menu.addAction(previous_tab)
+
     view_menu.addSeparator()
     for label, axis in (("Along a axis", 0), ("Along b axis", 1), ("Along c axis", 2)):
         action = QAction(label, window)
         action.triggered.connect(
             lambda _checked=False, a=axis: window.viewport.align_view_along(a)
+        )
+        view_menu.addAction(action)
+        window._axis_actions.append(action)
+    # Down the reciprocal axes, as in VESTA: a* is normal to b and c, so the bc
+    # face is seen square-on however far a leans from it.
+    for label, axis in (("Along a*", 0), ("Along b*", 1), ("Along c*", 2)):
+        action = QAction(label, window)
+        action.triggered.connect(
+            lambda _checked=False, a=axis: window.viewport.align_view_along(a, reciprocal=True)
         )
         view_menu.addAction(action)
         window._axis_actions.append(action)
@@ -644,6 +678,26 @@ def _build_toolbars(window) -> None:
         button.setToolTip(f"Look down the {label} axis")
         style_chip(button, "axis", label)
         button.clicked.connect(lambda _checked=False, a=axis: window.viewport.align_view_along(a))
+        view_toolbar.addWidget(button)
+        window._axis_buttons.append(button)
+
+    # The same three down a*, b*, c*, as VESTA has them: outlined in the axis
+    # colour rather than filled, so they read as the a/b/c chips' reciprocal
+    # partners and the row does not become six loud blocks.
+    view_toolbar.addWidget(_toolbar_spacer(4))
+    for label, axis, colour in (("a", 0, theme_axis_colour(0)),
+                                ("b", 1, theme_axis_colour(1)),
+                                ("c", 2, theme_axis_colour(2))):
+        button = QToolButton(window)
+        button.setIcon(axis_icon(f"{label}*", "", colour, window.font()))
+        button.setToolTip(
+            f"Look down {label}* — normal to the "
+            f"{'bc' if axis == 0 else 'ca' if axis == 1 else 'ab'} plane, seen square-on"
+        )
+        style_chip(button, "axis-reciprocal", label)
+        button.clicked.connect(
+            lambda _checked=False, a=axis: window.viewport.align_view_along(a, reciprocal=True)
+        )
         view_toolbar.addWidget(button)
         window._axis_buttons.append(button)
 

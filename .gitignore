@@ -24,6 +24,12 @@ site/
 # Claude Code (machine-local settings)
 .claude/settings.local.json
 
+# Files the Claude desktop app saves into the folder (screenshots, exports)
+Claude outputs/
+
+# Claude's working notes on the code, kept on this machine only
+/CLAUDE.md
+/ARCHITECTURE.md
 
 # Generated at build time from the GitHub releases (docs/conf.py).
 docs/release-notes.md
