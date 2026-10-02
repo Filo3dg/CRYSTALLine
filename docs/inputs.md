@@ -35,7 +35,7 @@ choice. The line beneath the box says which cell and setting the deck is in.
 
 | Cell | Deck |
 | --- | --- |
-| **As computed** | the cell drawn in the 3D view, in its own setting: `1 0 0` / `P 1 21/N 1` / a, b, c, β for a P2₁/n crystal |
+| **As in the file** | the cell drawn in the 3D view, in its own setting: `1 0 0` / `P 1 21/N 1` / a, b, c, β for a P2₁/n crystal |
 | **Standard setting** | the conventional standard cell: `0 0 0` / `14` / its a, b, c, β |
 
 The setting is named as the CRYSTAL manual prescribes (geometry input,

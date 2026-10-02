@@ -27,11 +27,19 @@ show the tab on screen. A new tab starts from the display settings of the one
 open when it was made, and each changes independently from then on; editing
 mode applies to whichever tab is shown.
 
+Files are read in the background, one after another, and the status bar says
+which one is being read. The first comes to the front to be worked in while the
+rest arrive behind it; a tab set behind this way holds its file and waits,
+drawing nothing until it is looked at — so anything that file has to say about
+itself, such as modes that could not be read, is said when its tab is first
+shown. A file that will not read opens no tab at all.
+
 Tabs are named after their files, with the folder added when two files share a
 name — `0GPa/fort.34` and `1GPa/fort.34` — and can be dragged to reorder them.
 **File → Close tab** ({kbd}`Ctrl+W`) closes the one on screen, and **View → Next
 tab** and **Previous tab** ({kbd}`Ctrl+Tab`, {kbd}`Ctrl+Shift+Tab`) move between
-them. While a plot or an orbital is being computed, the tabs wait for it.
+them. While a plot or an orbital is being computed the tab bar waits for it, and
+what is built lands in the tab it was started in whatever is on screen by then.
 
 ## Working in the calculation's folder
 

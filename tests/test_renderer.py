@@ -768,6 +768,27 @@ def _adp_renderer(settings: RenderSettings = _ADP_ON, structure=None):
     return renderer
 
 
+def test_tensors_rebuild_the_scene_only_when_ellipsoids_are_drawn(monkeypatch):
+    """Opening a file pushes its tensors — most often none — whether or not the
+    ellipsoids are on; with them off nothing on screen changes, and the scene
+    used to be built a second time for it."""
+    tensors = np.tile(_TYPICAL_ADP, (2, 1, 1))
+    off = _adp_renderer(RenderSettings(show_adp_ellipsoids=False))
+    rebuilds = []
+    monkeypatch.setattr(off, "_rebuild", lambda: rebuilds.append("off"))
+    off.set_adp_tensors(None)
+    off.set_adp_tensors(tensors)                     # stored, not drawn
+    assert rebuilds == [] and off._adp_tensors is not None
+
+    on = _adp_renderer()
+    monkeypatch.setattr(on, "_rebuild", lambda: rebuilds.append("on"))
+    on.set_adp_tensors(None)                         # none before, none now
+    assert rebuilds == []
+    on.set_adp_tensors(tensors)                      # drawn: rebuilt
+    on.set_adp_tensors(None)                         # taken away: rebuilt
+    assert rebuilds == ["on", "on"]
+
+
 def test_ellipsoids_replace_the_atom_spheres():
     """The ellipsoid *is* the atom, as in ORTEP. Keeping the covalent-radius
     sphere as well would bury it — a 50% ellipsoid is a couple of tenths of an

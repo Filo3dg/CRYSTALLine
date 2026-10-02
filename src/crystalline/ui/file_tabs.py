@@ -70,13 +70,33 @@ UNTITLED = "Untitled"
 
 
 class FileTab:
-    """The state and the widgets of one open file."""
+    """The state and the widgets of one open file.
+
+    The widgets are not necessarily there yet. A tab's page is a bare container
+    from the moment the tab exists; the 3D view goes into it, and the panels are
+    built, the first time the tab is shown — see
+    :meth:`~crystalline.ui.main_window.MainWindow._realise_tab`. Opening ten
+    files at once would otherwise build ten VTK render windows, nine of them for
+    tabs nobody has looked at yet, at ~100 ms each before anything is drawn.
+    """
 
     def __init__(self) -> None:
         for name in PER_TAB:
             setattr(self, name, None)
         self.path: Optional[str] = None        # the file it was opened from
         self.label = UNTITLED                  # what its tab says (see tab_labels)
+        # The tab's page in the bar — always present, so the tab can be added,
+        # named, moved and closed before it has a 3D view. The view is put
+        # inside it when the tab is first shown.
+        self.page = None
+        # A file read but not yet put into widgets, for a tab that has not been
+        # shown: ``(path, LoadedFile)``. The parse happens when the file is
+        # opened (one that will not read still opens no tab); only the showing
+        # of it waits.
+        self.pending = None
+        # The display settings the tab starts from — the look of the tab it was
+        # opened from, kept until there is a renderer to give them to.
+        self.start_settings = None
         # Whether this tab's Plots window was open when it was last shown, so
         # coming back to it brings its plots back — and a tab without plots does
         # not leave another file's figures floating over it.
@@ -85,10 +105,18 @@ class FileTab:
         # once: some of the probes read the whole .out, and switching tab must
         # not re-read every file each time.
         self.capabilities: dict = {}
+        # What opening the file had to leave out (its modes, say), still to be
+        # said: a tab read in behind the one being worked in says it when it is
+        # first brought to the front.
+        self.notice: Optional[str] = None
+
+    def built(self) -> bool:
+        """Whether this tab's widgets exist yet (it has been shown at least once)."""
+        return self.viewport is not None
 
     def is_blank(self) -> bool:
         """No file and no atoms: a tab the next opened file can simply take over."""
-        if self.path is not None:
+        if self.path is not None or self.pending is not None:
             return False
         for structure in (self._source, self.structure):
             if structure is not None and len(structure):

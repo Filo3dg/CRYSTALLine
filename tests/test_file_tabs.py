@@ -149,10 +149,13 @@ class _Part(QWidget):
 class _Window(QMainWindow):
     _add_tab = MainWindow._add_tab
     _activate_tab = MainWindow._activate_tab
+    _show_notice = MainWindow._show_notice
     _close_tab = MainWindow._close_tab
     _close_tab_at = MainWindow._close_tab_at
     _close_current_tab = MainWindow._close_current_tab
     _take_tab_for_file = MainWindow._take_tab_for_file
+    _realise_tab = MainWindow._realise_tab
+    _show_notice = MainWindow._show_notice
     _tab_for_page = MainWindow._tab_for_page
     _on_file_tab_changed = MainWindow._on_file_tab_changed
     _on_plot_dock_visibility = MainWindow._on_plot_dock_visibility
@@ -172,7 +175,9 @@ class _Window(QMainWindow):
         self._editing = False
         self._workers = []
         self.chrome = 0
-        self.made = []
+        self.made = []          # every tab created
+        self.built = []         # every tab whose widgets were actually built
+        self.installed = []     # every (tab, path) put into widgets
         self._file_tabs = QTabWidget(self)
         self._file_tabs.setTabsClosable(True)
         self.setCentralWidget(self._file_tabs)
@@ -186,15 +191,27 @@ class _Window(QMainWindow):
         self._add_tab()
 
     def _create_tab(self, structure=None, settings=None):
+        """State and a page, as the window's own does — no widgets yet."""
         tab = FileTab()
+        tab.page = QWidget(self._file_tabs)
+        tab.start_settings = settings
         tab._source = structure if structure is not None else Structure.empty()
         tab.structure = tab._source
+        self.made.append((tab, settings))
+        return tab
+
+    def _build_tab_widgets(self, tab):
         for name in file_tabs.PER_TAB_WIDGETS:
             setattr(tab, name, _Part(name))
         for name, stack in self._panel_stacks.items():
             stack.addWidget(getattr(tab, name))
-        self.made.append((tab, settings))
-        return tab
+        self.built.append(tab)
+
+    def _fill_tab(self, tab, path, read):
+        """What the window does once a file is read and its tab is on screen."""
+        self.installed.append((tab, path))
+        tab.path = path
+        self._update_tab_labels()
 
     def _refresh_chrome(self):
         self.chrome += 1
@@ -203,10 +220,15 @@ class _Window(QMainWindow):
     def _follow_theme_background(self):
         pass
 
-    def open(self, path):
-        """What ``_load_path`` does with tabs, without reading anything."""
-        tab = self._take_tab_for_file()
+    def open(self, path, front=True):
+        """What ``_show_read_file`` does with tabs, without reading anything."""
+        if front or self._tab.is_blank():
+            tab = self._take_tab_for_file()
+            self._fill_tab(tab, path, None)
+            return tab
+        tab = self._add_tab(show=False)
         tab.path = path
+        tab.pending = (path, None)
         self._update_tab_labels()
         return tab
 
@@ -236,7 +258,7 @@ def test_each_further_file_opens_in_a_tab_of_its_own_and_is_shown(qapp):
     # and every dock shows the new tab's panel
     for name, stack in window._panel_stacks.items():
         assert stack.currentWidget() is getattr(ice, name)
-    assert window._file_tabs.currentWidget() is ice.viewport
+    assert window._file_tabs.currentWidget() is ice.page
 
 
 def test_switching_tab_shows_that_tabs_panels_and_stops_the_other_animation(qapp):
@@ -284,6 +306,113 @@ def test_plots_come_and_go_with_their_tab(qapp):
     window._file_tabs.setCurrentIndex(0)
     assert window._plot_dock.isHidden() and not urea.plots_open
     assert not ice.plots_open
+
+
+def test_a_tab_opened_beside_others_is_built_only_when_it_is_looked_at(qapp):
+    """Opening ten files should cost one 3D view, not ten.
+
+    Each file is still read as it is opened — one that will not read opens no
+    tab — but a tab nobody has switched to keeps the file in hand and builds
+    nothing until it is clicked.
+    """
+    window = _Window()
+    first = window.open("/runs/urea.out")                 # takes the blank tab, on screen
+    waiting = window.open("/runs/ice.out", front=False)
+    third = window.open("/runs/mgo.out", front=False)
+
+    assert window._tab is first                           # the one to be worked in
+    assert window.built == [first]                        # no view made for either other
+    assert not waiting.built() and waiting.pending is not None
+    assert _titles(window) == ["urea.out", "ice.out", "mgo.out"]  # named all the same
+
+    window._file_tabs.setCurrentIndex(1)                  # a click on the waiting tab
+    assert waiting.built() and window.built[-1] is waiting
+    assert window.installed[-1] == (waiting, "/runs/ice.out")
+    assert waiting.pending is None                        # and not installed twice
+    for name, stack in window._panel_stacks.items():
+        assert stack.currentWidget() is getattr(waiting, name)
+
+    window._file_tabs.setCurrentIndex(2)
+    window._file_tabs.setCurrentIndex(1)
+    assert window.built.count(waiting) == 1               # built once, not on every visit
+    assert third.built()                                  # and the third, when visited
+
+
+def test_a_background_result_lands_in_the_tab_it_was_started_in(qapp, monkeypatch):
+    """A plot or an orbital is built off the main thread, and the tab bar is
+    disabled meanwhile — but that only stops the *user* moving. A file read in
+    behind the work brings its own tab to the front when it is ready, and the
+    result would then be drawn into that newly opened file: its atoms, its
+    renderer, its panels.
+    """
+    from crystalline.ui import main_window as mw
+
+    class _Signal:
+        def __init__(self):
+            self._slots = []
+
+        def connect(self, slot):
+            self._slots.append(slot)
+
+        def emit(self, value):
+            for slot in list(self._slots):
+                slot(value)
+
+    class _Worker:
+        made = []
+
+        def __init__(self, work):
+            self.work, self.finished, self.failed = work, _Signal(), _Signal()
+            _Worker.made.append(self)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(mw, "Worker", _Worker)
+
+    class _Window:
+        _run_busy = MainWindow._run_busy
+        _routed = MainWindow._routed
+        _acting_on = MainWindow._acting_on
+
+        def __init__(self):
+            self.first, self.second = FileTab(), FileTab()
+            self._tabs = [self.first, self.second]
+            self._tab = self.first
+            self._workers = []
+            self._busy = type("B", (), {"start": lambda *a: None, "stop": lambda *a: None})()
+            self._file_tabs = type(
+                "T", (), {"tabBar": lambda *a: type("B", (), {"setEnabled": lambda *a: None})()}
+            )()
+
+        def _refresh_chrome(self):
+            pass
+
+    window = _Window()
+    drawn = []
+    window._run_busy(lambda: "the orbital", "Building…",
+                     lambda result: drawn.append((result, window._tab)), "Orbital unavailable")
+
+    window._tab = window.second          # a file read in behind arrives and takes the screen
+    _Worker.made[-1].finished.emit("the orbital")
+
+    assert drawn == [("the orbital", window.first)]   # drawn into the tab it was built for
+    assert window._tab is window.second               # and the screen is left where it was
+    assert window._workers == []                      # the worker is let go either way
+
+
+def test_closing_a_tab_nobody_looked_at_lets_its_file_go(qapp):
+    """It has no widgets to take down — and the file it is holding must not stay."""
+    window = _Window()
+    urea = window.open("/runs/urea.out")
+    waiting = window.open("/runs/ice.out", front=False)
+
+    window._close_tab(waiting)
+
+    assert window._tabs == [urea] and window._tab is urea
+    assert _titles(window) == ["urea.out"]
+    assert waiting.pending is None
+    assert not waiting.built()
 
 
 def test_closing_a_tab_lets_its_file_go(qapp):
@@ -388,16 +517,21 @@ def test_a_hidden_view_is_not_drawn_into():
     from crystalline.ui.viewport import Viewport
 
     init = inspect.getsource(Viewport.__init__)
-    assert "self.interactor.render = render_if_shown" in init
+    assert "self.interactor.render = request_render" in init
     assert "isVisible()" in init
     assert "self._render_held" in inspect.getsource(inspect.unwrap(Viewport.eventFilter))
+    # a draw queued while the view was shown, and run after it was hidden, is held too
+    assert "self._render_held = True" in inspect.getsource(inspect.unwrap(Viewport._draw_queued))
 
 
-def test_the_file_tabs_sit_centred_over_the_view():
+def test_the_file_tabs_start_at_the_left_of_the_view():
+    """Where a row of tabs is read from. Centred, every tab shifted sideways
+    each time a file was opened or closed, and the first file no longer sat
+    where it had been put."""
     import inspect
 
     from crystalline.ui import theme
 
     for palette in (theme.LIGHT, theme.DARK):
-        assert "QTabWidget#fileTabs::tab-bar { alignment: center; }" in theme.stylesheet(palette)
+        assert "QTabWidget#fileTabs::tab-bar { alignment: left; }" in theme.stylesheet(palette)
     assert 'self._file_tabs.setObjectName("fileTabs")' in inspect.getsource(MainWindow.__init__)

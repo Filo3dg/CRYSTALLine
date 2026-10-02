@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import List, Optional, Sequence, Tuple
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QSpinBox, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QHBoxLayout, QSizePolicy, QSpinBox, QWidget
 
 from crystalline.core import lattice_planes as lp
 
@@ -37,10 +37,25 @@ class MillerIndices(QWidget):
         self.boxes: List[QSpinBox] = []
         for name, value in zip("hkl", values):
             if name == "l":
-                self.i_label = QLabel()
-                self.i_label.setToolTip("i = −(h + k): hexagonal axes are indexed (h k i l)")
+                # A box like the others, so the four indices read as one set —
+                # but greyed and untypeable, because this one is not a choice:
+                # it is fixed by h and k. As a bare label among spin boxes it
+                # looked like a stray piece of text.
+                self.i_label = QSpinBox()
+                self.i_label.setRange(-2 * MILLER_RANGE, 2 * MILLER_RANGE)
+                self.i_label.setPrefix("i ")
+                self.i_label.setButtonSymbols(QSpinBox.NoButtons)
+                self.i_label.setReadOnly(True)
+                self.i_label.setEnabled(False)
+                self.i_label.setFocusPolicy(Qt.NoFocus)
+                self.i_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+                self.i_label.setMinimumWidth(_BOX_MIN_WIDTH)
+                self.i_label.setToolTip(
+                    "i = −(h + k). Hexagonal axes are indexed (h k i l), and this "
+                    "index is fixed by the other two rather than chosen."
+                )
                 self.i_label.hide()
-                row.addWidget(self.i_label)
+                row.addWidget(self.i_label, 1)
             box = QSpinBox(self)
             box.setRange(-MILLER_RANGE, MILLER_RANGE)
             box.setValue(int(value))
@@ -69,7 +84,7 @@ class MillerIndices(QWidget):
         self.i_label.setVisible(self.hexagonal)
         if self.hexagonal:
             h, k, _l = self.indices()
-            self.i_label.setText(f"i {-(h + k)}")
+            self.i_label.setValue(-(h + k))
 
 
 __all__ = ["MILLER_RANGE", "MillerIndices"]

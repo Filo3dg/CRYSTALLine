@@ -187,14 +187,29 @@ def test_the_chips_are_styled_by_the_theme_not_by_themselves(qapp):
             assert f'[axis="{axis}"]' in sheet
 
 
-def test_dock_tabs_and_widget_tabs_are_styled_apart(qapp):
-    """Dock tabs sit *below* their dock and a QTabWidget's sit *above* their
-    pane; one style for both comes out upside down on the docks, which is what
-    made them look broken."""
-    sheet = theme.stylesheet(theme.LIGHT)
+def test_every_tab_in_the_app_is_the_same_tab(qapp):
+    """A file tab, a dialog's tab and a dock tab are one control, so they get
+    one look: a borderless filled pill, by two selectors because dock tabs are
+    not inside a QTabWidget and the rules above cannot reach them.
 
-    assert "QMainWindow > QTabBar::tab" in sheet
-    assert "QTabWidget > QTabBar::tab" in sheet
+    And no base line under either bar. Qt draws that line across the bar except
+    under the selected tab — a rule with a gap in it, which is read as a broken
+    line, and is what the classic leaning tab needs to lean on.
+    """
+    import re
+
+    def rule(sheet: str, selector: str) -> set:
+        body = re.search(re.escape(selector) + r"\s*\{(.*?)\}", sheet, re.S)
+        assert body is not None, f"no rule for {selector}"
+        return {d.strip() for d in body.group(1).split(";") if d.strip()}
+
+    for palette in (theme.LIGHT, theme.DARK):
+        sheet = theme.stylesheet(palette)
+        assert rule(sheet, "QTabWidget > QTabBar::tab") == rule(sheet, "QMainWindow > QTabBar::tab")
+        assert (rule(sheet, "QTabWidget > QTabBar::tab:selected")
+                >= rule(sheet, "QMainWindow > QTabBar::tab:selected"))
+        for bar in ("QTabWidget > QTabBar", "QMainWindow > QTabBar"):
+            assert "qproperty-drawBase: 0" in rule(sheet, bar)
 
 
 # ── the sliding switch ────────────────────────────────────────────────────

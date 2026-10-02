@@ -56,9 +56,9 @@ _FILTERS = (
 # tighter). It keeps its scrollbar and stretches when there's room.
 _LIST_MIN_HEIGHT = 70
 
-# Two lines' worth, so the composition summary can wrap without the amplitude
-# and speed controls below it shifting as the selection changes.
-_CHARACTER_MIN_HEIGHT = 32
+# One line's worth, so the composition line can appear and disappear without
+# the amplitude and speed controls below it shifting as the selection changes.
+_CHARACTER_MIN_HEIGHT = 18
 
 # Animation timing. The timer stays at ~30 fps whatever the speed — speed
 # changes how far the phase moves per tick, so the motion stays smooth instead
@@ -231,8 +231,8 @@ class PhononPanel(QWidget):
         self.character_label.setMinimumHeight(_CHARACTER_MIN_HEIGHT)
         self.character_label.setAlignment(Qt.AlignTop)
         self.character_label.setToolTip(
-            "Share of the mode's kinetic energy carried by each element,\n"
-            "and how many atoms are effectively in motion."
+            "Share of the mode's kinetic energy carried by each element.\n"
+            "How many atoms are effectively in motion is on each mode's own tooltip."
         )
         layout.addWidget(self.character_label)
 
@@ -582,7 +582,12 @@ class PhononPanel(QWidget):
         self._phase = _START_PHASE
         self._animator.set_frame(self._phase)
         character = self.character(index)
-        self.character_label.setText("" if character is None else character.summary(limit=4))
+        # Composition only: the effective-atom count is a second, unrelated
+        # number, and under a list of modes it read as part of the selection
+        # rather than as a property of it. It stays on the mode's own tooltip.
+        self.character_label.setText(
+            "" if character is None else character.composition_text(limit=4) or "no motion"
+        )
         self.mode_selected.emit(index)
 
     def select_mode(self, index: int) -> bool:
