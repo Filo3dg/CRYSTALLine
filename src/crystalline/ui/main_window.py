@@ -161,6 +161,10 @@ class MainWindow(QMainWindow):
         # Workers in flight. Held because a dropped one is collected mid-run and
         # takes its QThread down with it.
         self._workers: list = []
+        # Files waiting to be read, and whether one is being read now: read one
+        # at a time, off the main thread (see _load_path).
+        self._pending_reads: list = []
+        self._reading = False
         # What each plot dialog was last set to, keyed by dialog. These are tuned
         # rather than answered — a broadening width, a frequency window — so
         # reopening one starts from the last accepted settings, not the defaults.
@@ -570,17 +574,18 @@ class MainWindow(QMainWindow):
             self._update_edit_actions()
         self._update_status()
 
-    def _capability(self, key: str, probe):
-        """What the open output offers, probed once per tab and file.
+    def _capability(self, key: str):
+        """What the open output offers for ``key`` (see :func:`_probe`), once per tab and file.
 
         Keyed by the output as well: a tab's file can change — an empty tab
         takes over the first file opened — and what was found for the one
-        before must not answer for the next.
+        before must not answer for the next. A file opened through
+        :meth:`_load_path` arrives with these already found, off the main thread.
         """
         cache = self._tab.capabilities
         entry = (key, self._output_path)
         if entry not in cache:
-            cache[entry] = probe()
+            cache[entry] = _probe(key, self._output_path)
         return cache[entry]
 
     def _on_cell_choice_changed(self, choice: str) -> None:
@@ -1000,10 +1005,7 @@ class MainWindow(QMainWindow):
         CRYSTAL output actually contains their data; data plots (bands/DOS/XRD)
         stay enabled — they read a separate file the user chooses.
         """
-        from crystalline.crystalio import output_availability
-
-        path = self._output_path
-        available = self._capability("plots", lambda: output_availability(path))
+        available = self._capability("plots")
         for kind in self._plot_kinds:
             enabled = True if kind.source == "data" else (kind.key in available)
             self._plot_actions[kind.key].setEnabled(enabled)
@@ -1046,19 +1048,6 @@ class MainWindow(QMainWindow):
                        show, "Plot failed")
 
     # ── thermal ellipsoids (ADP) ────────────────────────────────────────
-    def _load_adps(self, path: str) -> Optional[ADPSet]:
-        """The ADPs of the file just opened, or ``None`` if it carries none.
-
-        Most frequency runs don't: ADPs need the ``ADP`` keyword, so their
-        absence is the normal case and not worth reporting to the user.
-        """
-        try:
-            from crystalline.crystalio import load_adp
-
-            return load_adp(path)
-        except Exception:  # noqa: BLE001 - never let this break loading a file
-            return None
-
     def _displayed_adp(self, temperature_index: Optional[int] = None) -> Optional[np.ndarray]:
         """``(natom, 3, 3)`` tensors for the *source* cell at one temperature.
 
@@ -1334,12 +1323,9 @@ class MainWindow(QMainWindow):
         The cheap text probe, like the VCI entry: this runs on every load, and
         the real parse walks the phonon block as well.
         """
-        from crystalline.crystalio import has_anscan
-
         action = getattr(self, "_anscan_action", None)
         if action is not None:
-            path = self._output_path
-            action.setEnabled(self._capability("anscan", lambda: has_anscan(path)))
+            action.setEnabled(self._capability("anscan"))
 
     # ── anharmonic PES ──────────────────────────────────────────────────
     def _open_pes(self) -> None:
@@ -1393,12 +1379,9 @@ class MainWindow(QMainWindow):
 
     def _update_pes_action(self) -> None:
         """Enable the PES entry only for an output that carries the constants."""
-        from crystalline.crystalio import has_pes
-
         action = getattr(self, "_pes_action", None)
         if action is not None:
-            path = self._output_path
-            action.setEnabled(self._capability("pes", lambda: has_pes(path)))
+            action.setEnabled(self._capability("pes"))
 
     # ── plot typography ─────────────────────────────────────────────────
     def _open_orbitals(self) -> None:
@@ -1545,12 +1528,14 @@ class MainWindow(QMainWindow):
         self._apply_cell_view()
         return reps
 
-    def _run_busy(self, work, message: str, done, failed_title: str) -> None:
+    def _run_busy(self, work, message: str, done, failed_title: str, failed=None) -> None:
         """Run ``work`` off the main thread behind the busy overlay.
 
         ``done`` receives the result back on the UI thread, which is where any
         drawing has to happen: VTK and Qt widgets belong to the thread that made
-        them, so only the computation moves.
+        them, so only the computation moves. An exception is reported under
+        ``failed_title`` — or handed to ``failed`` instead, when given, for a
+        caller with more to do than say so.
         """
         self._busy.start(message)
         worker = Worker(work)
@@ -1568,7 +1553,10 @@ class MainWindow(QMainWindow):
 
         def on_failed(exc) -> None:
             cleanup()
-            QMessageBox.critical(self, failed_title, str(exc))
+            if failed is not None:
+                failed(exc)
+            else:
+                QMessageBox.critical(self, failed_title, str(exc))
 
         worker.finished.connect(lambda result: (cleanup(), done(result)))
         worker.failed.connect(on_failed)
@@ -1753,14 +1741,9 @@ class MainWindow(QMainWindow):
 
     def _update_orbital_actions(self) -> None:
         """Enable the orbital entries according to what is loaded and shown."""
-        from crystalline.crystalio import molden
-
         action = getattr(self, "_orbitals_action", None)
         if action is not None:
-            path = self._output_path
-            available = self._capability(
-                "orbitals", lambda: bool(path and molden.find_orbital_files(path))
-            )
+            available = self._capability("orbitals")
             action.setEnabled(available)
             action.setToolTip(
                 "" if available
@@ -1800,12 +1783,9 @@ class MainWindow(QMainWindow):
         Uses the cheap text probe, not the real parse: this runs every time a
         file is loaded, and parsing a large VCI block takes a second or two.
         """
-        from crystalline.crystalio import has_vci
-
         action = getattr(self, "_vci_action", None)
         if action is not None:
-            path = self._output_path
-            action.setEnabled(self._capability("vci", lambda: has_vci(path)))
+            action.setEnabled(self._capability("vci"))
 
     # ── spectrum ↔ mode linking ─────────────────────────────────────────
     def _select_mode_near(self, frequency: float) -> None:
@@ -2451,13 +2431,17 @@ class MainWindow(QMainWindow):
         into the structure on screen, and only the first of them — see
         :func:`~crystalline.ui.file_tabs.openable`.
         """
-        done = [path for path in to_open if self._load_path(path)]
-        if not to_open:
+        if to_open:
+            for path in to_open:
+                self._load_path(path)  # read in the background, in this order
+            done = to_open
+        else:
             done = [path for path in to_import if self._import_path(path)]
         if done and ignored:
             # Said rather than silently dropped: a multiple selection dragged in
-            # one gesture looks like it should all arrive.
-            verb = "Opened" if to_open else "Imported"
+            # one gesture looks like it should all arrive. "Opening": the files
+            # are still being read when this is said.
+            verb = "Opening" if to_open else "Imported"
             what = (os.path.basename(done[0]) if len(done) == 1
                     else f"{len(done)} files")
             self.statusBar().showMessage(
@@ -2503,28 +2487,66 @@ class MainWindow(QMainWindow):
         path = self._tab.path if self._tab is not None else None
         return os.path.dirname(path) if path else ""
 
-    def _load_path(self, path: str) -> bool:
-        """Open ``path`` in a tab of its own. False if it wouldn't read.
+    def _load_path(self, path: str) -> None:
+        """Open ``path`` in a tab of its own, reading it off the main thread.
+
+        Reading is the slow part — CRYSTALClear walks the whole output, and
+        finding out which plots, orbitals and anharmonic data it holds walks it
+        again — so :func:`_read_file` does all of it on a worker, behind the busy
+        overlay, and the window stays responsive while a large output is read.
+        Files are read one at a time, in the order given: several opened at
+        once arrive as tabs in that order, and the busy overlay says which is
+        being read.
+
+        Split out of :meth:`_open_file` so a file arriving any other way — dropped
+        on the window — goes through exactly the same sequence (see
+        :meth:`_show_read_file` for what that is).
+        """
+        self._pending_reads.append(path)
+        if not self._reading:
+            self._read_next()
+
+    def _read_next(self) -> None:
+        """Start reading the next queued file, if there is one."""
+        if not self._pending_reads:
+            self._reading = False
+            return
+        self._reading = True
+        path = self._pending_reads.pop(0)
+        name = os.path.basename(path)
+
+        def shown(read) -> None:
+            try:
+                self._show_read_file(path, read)
+            finally:
+                self._read_next()
+
+        def failed(exc) -> None:
+            # A file that will not read opens no tab, and stops nothing queued
+            # behind it.
+            QMessageBox.critical(self, "Load failed", f"{name}:\n{exc}")
+            self._read_next()
+
+        self._run_busy(lambda: _read_file(path), f"Reading {name}…", shown,
+                       "Load failed", failed=failed)
+
+    def _show_read_file(self, path: str, read: "_ReadFile") -> None:
+        """Put a file that has been read into a tab, and the window in step with it.
 
         The file goes into the tab on screen if that one is empty — the window
         opens on an empty tab, and the first file takes it over — and into a new
-        tab otherwise; a file that will not read opens no tab at all.
-
-        Split out of :meth:`_open_file` so a file arriving any other way — dropped
-        on the window — goes through exactly the same sequence. There is a lot of
-        it, and a second copy would drift: whatever the tab showed before has to
-        be let go, the supercell and the tiling reset, and eight menu sections
-        re-enabled against what this file turns out to contain.
+        tab otherwise. There is a lot to do, and all of it on the UI thread:
+        whatever the tab showed before has to be let go, the supercell and the
+        tiling reset, and eight menu sections re-enabled against what this file
+        turns out to contain — from what :func:`_read_file` found, not by
+        reading the file again.
         """
-        try:
-            from crystalline.crystalio import load
-
-            result = load(path)
-        except Exception as exc:  # noqa: BLE001 - surface any parse error to the user
-            QMessageBox.critical(self, "Load failed", f"{os.path.basename(path)}:\n{exc}")
-            return False
+        result = read.loaded
         tab = self._take_tab_for_file()
         tab.path = path
+        tab.capabilities.update(
+            {(key, read.output_path): found for key, found in read.capabilities.items()}
+        )
         # The previous file's plots belong to the previous file: their figures
         # stay live otherwise, and a spectrum's peak-pick handler would select
         # modes in a structure it knows nothing about.
@@ -2542,17 +2564,17 @@ class MainWindow(QMainWindow):
         self.geometry_panel.clear_lattice_planes()
         self._source = result.structure
         self._set_qmodes(result.qpoints if result.has_phonons else [])
-        self._adps = self._load_adps(path)
+        self._adps = read.adps
         self._tile_restore = None  # nothing of the old file's tiling to go back to
         self._set_supercell((1, 1, 1))  # a fresh file starts at its own unit cell
         # Remember the output file so property plots (IR/Raman/elastic/EOS) can
         # read it directly; geometry-only files (.gui/.f34/.cif) carry no such data.
-        self._output_path = None if path.lower().endswith((".gui", ".f34", ".cif")) else path
+        self._output_path = read.output_path
         self._apply_cell_view()
         # After the view exists (and its ADP tensors have been pushed), so
         # switching the ellipsoids on draws them straight away.
         self._update_adp_controls(autoshow=True)
-        self._update_info(path)
+        self._update_info(read.output_props)
         self._update_plot_actions()  # enable only the plots this file supports
         self._update_orbital_actions()  # and the orbitals, if the run wrote any
         self._update_spectra_action()
@@ -2570,7 +2592,6 @@ class MainWindow(QMainWindow):
         # appears to have been a geometry all along.
         if result.note:
             QMessageBox.warning(self, "Modes not read", result.note)
-        return True
 
     def _import_atoms(self) -> None:
         """Read atoms from an .xyz/.pdb/.cif file and add them to the current structure.
@@ -2617,21 +2638,16 @@ class MainWindow(QMainWindow):
         self.structure_panel.set_selection(new)
         return True
 
-    def _update_info(self, path: str) -> None:
+    def _update_info(self, output_props: dict) -> None:
         """Refresh the crystallographic info panel for the loaded system.
 
-        Described on the cell on screen, folded to one cell — not on the file's
-        primitive cell — so that "as computed" means the cell the 3D view draws,
-        and so that the panel says the same thing before an edit as after one.
+        ``output_props`` are the rows the CRYSTAL output gives about its own run
+        (read by :func:`_read_file`). The crystallography is described on the
+        cell on screen, folded to one cell — not on the file's primitive cell —
+        so that "as computed" means the cell the 3D view draws, and so that the
+        panel says the same thing before an edit as after one.
         """
-        props = {}
-        try:
-            from crystalline.crystalio import output_properties
-
-            props = output_properties(path)
-        except Exception:  # noqa: BLE001 - never let output parsing break loading
-            props = {}
-        self._output_props = props or {}
+        self._output_props = output_props or {}
         self.info_panel.show_structure(self._analysis_cell(), self._output_props)
 
     def _refresh_info(self) -> None:
@@ -3039,6 +3055,78 @@ class MainWindow(QMainWindow):
         self._update_view_actions()  # a/b/c alignment depends on the cell just shown
         if hasattr(self, "display_panel"):
             self.display_panel.set_elements(self.structure.numbers)  # refresh element swatches
+
+
+# ── reading a file, off the main thread ────────────────────────────────────
+# Everything below is Qt-free: it runs on a worker (MainWindow._read_next), so it
+# may parse, but never touch a widget.
+
+# What an open output is probed for, to enable the menus that need it.
+_PROBES = ("plots", "orbitals", "vci", "anscan", "pes")
+
+
+def _probe(key: str, output_path: Optional[str]):
+    """What the output at ``output_path`` offers for ``key`` — one of :data:`_PROBES`.
+
+    The one definition, used by :meth:`MainWindow._capability` and by
+    :func:`_read_file` alike, so a probe answered off the main thread means
+    what it means when the window asks.
+    """
+    from crystalline import crystalio
+    from crystalline.crystalio import molden
+
+    if key == "plots":
+        return crystalio.output_availability(output_path)
+    if key == "orbitals":
+        return bool(output_path and molden.find_orbital_files(output_path))
+    if key == "vci":
+        return crystalio.has_vci(output_path)
+    if key == "anscan":
+        return crystalio.has_anscan(output_path)
+    if key == "pes":
+        return crystalio.has_pes(output_path)
+    raise KeyError(f"no probe {key!r}")
+
+
+@dataclass
+class _ReadFile:
+    """Everything a new tab takes from its file, read in one go."""
+
+    loaded: object                  # crystalio.LoadedFile: the structure, and modes if any
+    output_path: Optional[str]      # the CRYSTAL output; None for a geometry-only file
+    adps: Optional[ADPSet]          # thermal ellipsoids, when the run has them
+    output_props: dict              # the run's own rows for the Info panel
+    capabilities: dict              # probe key → what _probe found
+
+
+def _read_file(path: str) -> _ReadFile:
+    """Read ``path`` for a tab: the structure, then everything else the window asks of it.
+
+    Only the structure is required — a file that will not read raises, and opens
+    no tab. The rest is best effort, as it was when the window read it itself:
+    most runs carry no ADPs, not every output has the rows the Info panel shows,
+    and a probe that fails here is simply left for the window to ask again.
+    """
+    from crystalline.crystalio import load, load_adp, output_properties
+
+    loaded = load(path)
+    # Geometry-only files (.gui/.f34/.cif) carry no results to plot.
+    output_path = None if path.lower().endswith((".gui", ".f34", ".cif")) else path
+    try:
+        adps = load_adp(path)
+    except Exception:  # noqa: BLE001 - never let this break loading a file
+        adps = None
+    try:
+        output_props = output_properties(path) or {}
+    except Exception:  # noqa: BLE001 - never let output parsing break loading
+        output_props = {}
+    capabilities = {}
+    for key in _PROBES:
+        try:
+            capabilities[key] = _probe(key, output_path)
+        except Exception:  # noqa: BLE001 - asked again, and reported, by the window
+            pass
+    return _ReadFile(loaded, output_path, adps, output_props, capabilities)
 
 
 def _no_title_bar(dock: QDockWidget) -> QWidget:

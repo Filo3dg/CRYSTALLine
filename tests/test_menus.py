@@ -119,9 +119,10 @@ def test_import_atoms_action_starts_disabled(qapp):
     assert not window._import_action.isEnabled()  # disabled until a structure loads
 
     assert callable(MainWindow._update_import_action)
-    # ...on _load_path, which is the open sequence itself: _open_file is now only
-    # the file dialog in front of it, so that a dropped file follows the same one.
-    src = inspect.getsource(MainWindow._load_path)
+    # ...in _show_read_file, the open sequence itself once the file is read (off
+    # the main thread, by _load_path): _open_file is only the file dialog in front
+    # of it, so that a dropped file follows the same one.
+    src = inspect.getsource(MainWindow._show_read_file)
     assert "_update_import_action" in src  # re-enabled on open
 
 

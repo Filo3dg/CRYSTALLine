@@ -2027,10 +2027,16 @@ class StructureRenderer:
         ``redraw=False`` stages the tensors for a rebuild the caller is about to
         trigger anyway — changing the temperature changes both these tensors and
         the settings, and rebuilding twice makes the view flicker.
+
+        With the ellipsoids switched off nothing on screen changes, so there is
+        nothing to rebuild: opening a file used to build its scene twice, the
+        second time for tensors — most often none at all — that are not drawn.
         """
+        shown = self._settings.show_adp_ellipsoids
+        was_drawn = shown and self._adp_tensors is not None
         self._adp_tensors = None if tensors is None else np.asarray(tensors, dtype=float)
         self._ellipsoid_mask = None  # a new tensor set decides anew who gets one
-        if redraw:
+        if redraw and (was_drawn or (shown and self._adp_tensors is not None)):
             self._rebuild()
 
     def _draw_adp_ellipsoids(self) -> None:

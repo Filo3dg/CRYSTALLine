@@ -388,9 +388,11 @@ def test_a_hidden_view_is_not_drawn_into():
     from crystalline.ui.viewport import Viewport
 
     init = inspect.getsource(Viewport.__init__)
-    assert "self.interactor.render = render_if_shown" in init
+    assert "self.interactor.render = request_render" in init
     assert "isVisible()" in init
     assert "self._render_held" in inspect.getsource(inspect.unwrap(Viewport.eventFilter))
+    # a draw queued while the view was shown, and run after it was hidden, is held too
+    assert "self._render_held = True" in inspect.getsource(inspect.unwrap(Viewport._draw_queued))
 
 
 def test_the_file_tabs_sit_centred_over_the_view():

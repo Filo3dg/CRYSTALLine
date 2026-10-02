@@ -78,8 +78,7 @@ def _window():
             self.messages = []
 
         def _load_path(self, path):
-            self.opened.append(path)
-            return True
+            self.opened.append(path)  # queued to be read; returns nothing
 
         def _import_path(self, path):
             self.imported.append(path)
@@ -217,7 +216,8 @@ def test_dropping_several_files_opens_every_one_and_says_what_was_left(qapp):
 
     assert window.opened == ["/tmp/run.out", "/tmp/other.cif"]
     assert len(window.messages) == 1
-    assert "Opened 2 files — 1 other dropped file ignored" in window.messages[0]
+    # "Opening": the files are read in the background, so they are not open yet
+    assert "Opening 2 files — 1 other dropped file ignored" in window.messages[0]
 
 
 def test_atoms_are_not_imported_into_a_structure_about_to_be_replaced(qapp):
