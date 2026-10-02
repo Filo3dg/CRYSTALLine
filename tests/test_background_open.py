@@ -1,9 +1,13 @@
 """Opening a file reads it off the main thread, then builds its tab from what was read.
 
-The window itself needs a real display (VTK), so these exercise the two halves
-apart: :func:`_read_file`, which is Qt-free and does all the reading, and the
-queue in :meth:`MainWindow._load_path`, on a stand-in carrying the window's
-own methods with the tab-building stubbed out.
+With no loading screen: the first of several files comes to the front to be
+worked in, and the rest are set behind it as they are read.
+
+The window itself needs a real display (VTK), so these exercise the parts
+apart: :func:`_read_file`, which is Qt-free and does all the reading; the
+queue in :meth:`MainWindow._load_path`; and where a read file lands
+(:meth:`MainWindow._show_read_file`) — on stand-ins carrying the window's own
+methods, with the tab-building stubbed out.
 """
 
 import threading
@@ -85,50 +89,45 @@ def test_what_was_found_off_the_thread_answers_the_window(monkeypatch):
 
 
 # ── the queue ─────────────────────────────────────────────────────────────
-class _Busy:
+class _Label:
+    """The status bar's reading label: what it said, and whether it is shown."""
+
     def __init__(self):
-        self.messages = []
+        self.texts = []
+        self.visible = False
 
-    def start(self, message):
-        self.messages.append(message)
+    def setText(self, text):
+        self.texts.append(text)
 
-    def stop(self):
-        pass
+    def show(self):
+        self.visible = True
 
-
-class _TabBar:
-    enabled = True
-
-    def setEnabled(self, enabled):
-        self.enabled = enabled
-
-
-class _Tabs:
-    def __init__(self):
-        self.bar = _TabBar()
-
-    def tabBar(self):
-        return self.bar
+    def hide(self):
+        self.visible = False
 
 
 def _window():
-    """The window's queue and worker plumbing, with the tab-building recorded instead."""
+    """The window's queue, with the tab-building recorded instead.
+
+    No busy overlay, no worker list, no tab bar: reading must use none of them —
+    the user goes on working in the window while files are read.
+    """
 
     class _Stub:
         _load_path = MainWindow._load_path
         _read_next = MainWindow._read_next
-        _run_busy = MainWindow._run_busy
+        _update_reading_status = MainWindow._update_reading_status
 
         def __init__(self):
-            self._busy = _Busy()
-            self._workers = []
-            self._file_tabs = _Tabs()
+            self._reading_status = _Label()
             self._pending_reads = []
             self._reading = False
+            self._reading_path = None
+            self._reader = None
             self.shown = []
 
-        def _show_read_file(self, path, read):
-            self.shown.append((path, read, threading.current_thread()))
+        def _show_read_file(self, path, read, front):
+            self.shown.append((path, read, front, threading.current_thread()))
 
     return _Stub()
 
@@ -148,18 +147,33 @@ def test_files_are_read_off_the_main_thread_one_at_a_time_in_order(qapp, qtbot, 
                         staticmethod(lambda _parent, title, text: reported.append((title, text))))
     window = _window()
 
-    for path in ("/runs/a.out", "/runs/broken.out", "/runs/c.gui"):
-        window._load_path(path)
+    window._load_path("/runs/a.out", front=True)
+    window._load_path("/runs/broken.out", front=False)
+    window._load_path("/runs/c.gui", front=False)
     qtbot.waitUntil(lambda: not window._reading, timeout=5000)
 
     main = threading.main_thread()
     assert all(thread is not main for thread in read_on.values())     # read off the main thread
-    assert [(p, r) for p, r, _t in window.shown] == [                 # tabs built in order...
-        ("/runs/a.out", "read /runs/a.out"), ("/runs/c.gui", "read /runs/c.gui")]
-    assert all(thread is main for _p, _r, thread in window.shown)     # ...on the main thread
+    assert [(p, r, f) for p, r, f, _t in window.shown] == [           # tabs built in order...
+        ("/runs/a.out", "read /runs/a.out", True), ("/runs/c.gui", "read /runs/c.gui", False)]
+    assert all(thread is main for *_rest, thread in window.shown)     # ...on the main thread
     assert reported == [("Load failed", "broken.out:\nGeometry information not found.")]
-    assert window._busy.messages == ["Reading a.out…", "Reading broken.out…", "Reading c.gui…"]
-    assert window._file_tabs.bar.enabled and window._workers == []
+
+
+def test_the_status_bar_says_what_is_being_read_and_how_much_is_left(qapp, qtbot, monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(mw, "_read_file", lambda path: release.wait(5) and path)
+    window = _window()
+
+    for path in ("/runs/a.out", "/runs/b.out", "/runs/c.out"):
+        window._load_path(path, front=path.endswith("a.out"))
+    label = window._reading_status
+    assert label.visible and label.texts[-1] == "Reading a.out…  2 more to come"
+    release.set()
+    qtbot.waitUntil(lambda: not window._reading, timeout=5000)
+    assert "Reading b.out…  1 more to come" in label.texts
+    assert "Reading c.out…" in label.texts
+    assert not label.visible                                          # gone when all are read
 
 
 def test_a_file_opened_while_another_is_read_waits_its_turn(qapp, qtbot, monkeypatch):
@@ -179,4 +193,98 @@ def test_a_file_opened_while_another_is_read_waits_its_turn(qapp, qtbot, monkeyp
     assert started == ["/runs/first.out"]                    # not read alongside it
     release.set()
     qtbot.waitUntil(lambda: not window._reading, timeout=5000)
-    assert [p for p, _r, _t in window.shown] == ["/runs/first.out", "/runs/second.out"]
+    assert [p for p, *_rest in window.shown] == ["/runs/first.out", "/runs/second.out"]
+
+
+# ── where a file that has been read goes ──────────────────────────────────
+class _Tab:
+    def __init__(self, name, blank=False):
+        self.name, self.blank = name, blank
+        self.path = None
+        self.notice = None
+
+    def is_blank(self):
+        return self.blank
+
+
+def _router(blank_on_screen=False):
+    """The window's placing of a read file, with the tab-building recorded."""
+
+    class _Stub:
+        _show_read_file = MainWindow._show_read_file
+        _show_notice = MainWindow._show_notice
+        _acting_on = MainWindow._acting_on
+
+        def __init__(self):
+            self.on_screen = _Tab("on screen", blank=blank_on_screen)
+            self._tab = self.on_screen
+            self.calls = []
+
+        def _take_tab_for_file(self):
+            if not self._tab.is_blank():
+                self._tab = _Tab("new, in front")
+            self.calls.append(("take", self._tab.name))
+            return self._tab
+
+        def _add_tab(self, show=True):
+            self.calls.append(("add", show))
+            return _Tab("new, behind")
+
+        def _fill_tab(self, tab, path, read):
+            # filled while the window acts on it — whichever tab is on screen
+            self.calls.append(("fill", tab.name, self._tab.name))
+            tab.path = path
+            tab.notice = read
+
+        def _refresh_chrome(self):
+            self.calls.append(("menus for", self._tab.name))
+
+    return _Stub()
+
+
+@pytest.fixture
+def warnings_said(monkeypatch):
+    said = []
+    monkeypatch.setattr(QMessageBox, "warning",
+                        staticmethod(lambda _parent, title, text: said.append((title, text))))
+    return said
+
+
+def test_the_first_file_comes_to_the_front_and_says_what_it_left_out(qapp, warnings_said):
+    window = _router()
+    window._show_read_file("/runs/a.out", "modes could not be read", front=True)
+
+    assert window.calls == [("take", "new, in front"), ("fill", "new, in front", "new, in front")]
+    assert window._tab.name == "new, in front"
+    assert warnings_said == [("Modes not read", "a.out:\nmodes could not be read")]
+
+
+def test_the_others_are_set_behind_without_taking_the_screen(qapp, warnings_said):
+    """Built with the window acting on the new tab, then the menus are the
+    worked-in tab's again — and nothing pops up over the work."""
+    window = _router()
+    window._show_read_file("/runs/b.out", "modes could not be read", front=False)
+
+    assert window.calls == [("add", False),
+                            ("fill", "new, behind", "new, behind"),
+                            ("menus for", "on screen")]
+    assert window._tab is window.on_screen                   # still the one worked in
+    assert warnings_said == []                               # said when it is looked at
+
+
+def test_a_file_read_into_an_empty_window_fills_its_empty_tab(qapp, warnings_said):
+    window = _router(blank_on_screen=True)
+    window._show_read_file("/runs/b.out", None, front=False)
+    assert window.calls == [("take", "on screen"), ("fill", "on screen", "on screen")]
+
+
+def test_a_tab_read_in_behind_says_what_it_left_out_when_first_shown(qapp, warnings_said):
+    import inspect
+
+    window = _router()
+    tab = _Tab("behind")
+    tab.path, tab.notice = "/runs/b.out", "modes could not be read"
+    window._show_notice(tab)
+    window._show_notice(tab)                                 # once, not every visit
+    assert warnings_said == [("Modes not read", "b.out:\nmodes could not be read")]
+    assert "self._show_notice(tab)" in inspect.getsource(MainWindow._activate_tab)

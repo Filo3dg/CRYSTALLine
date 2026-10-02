@@ -74,11 +74,13 @@ def _window():
         def __init__(self):
             self._drop_hint = _Hint()
             self.opened = []
+            self.fronts = []  # whether each opened file comes to the front
             self.imported = []
             self.messages = []
 
-        def _load_path(self, path):
+        def _load_path(self, path, front=True):
             self.opened.append(path)  # queued to be read; returns nothing
+            self.fronts.append(front)
 
         def _import_path(self, path):
             self.imported.append(path)
@@ -215,6 +217,7 @@ def test_dropping_several_files_opens_every_one_and_says_what_was_left(qapp):
     qapp.processEvents()
 
     assert window.opened == ["/tmp/run.out", "/tmp/other.cif"]
+    assert window.fronts == [True, False]   # the first to work in, the other set behind it
     assert len(window.messages) == 1
     # "Opening": the files are read in the background, so they are not open yet
     assert "Opening 2 files — 1 other dropped file ignored" in window.messages[0]

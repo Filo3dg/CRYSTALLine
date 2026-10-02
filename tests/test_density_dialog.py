@@ -306,12 +306,12 @@ def test_opening_another_file_takes_the_previous_field_off_the_view():
     has to clear it before the new structure goes in, as it does the orbital.
     ``MainWindow`` cannot be built headless, so the order is read from the
     source, as the menu tests do for the rest of the open sequence
-    (``_show_read_file``, once ``_load_path`` has read the file)."""
+    (``_fill_tab``, once ``_load_path`` has read the file)."""
     import inspect
 
     from crystalline.ui.main_window import MainWindow
 
-    source = inspect.getsource(MainWindow._show_read_file)
+    source = inspect.getsource(MainWindow._fill_tab)
 
     assert "self._clear_density()" in source
     assert source.index("self._clear_density()") < source.index("self._source = result.structure")

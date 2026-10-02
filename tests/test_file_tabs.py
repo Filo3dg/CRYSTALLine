@@ -149,6 +149,7 @@ class _Part(QWidget):
 class _Window(QMainWindow):
     _add_tab = MainWindow._add_tab
     _activate_tab = MainWindow._activate_tab
+    _show_notice = MainWindow._show_notice
     _close_tab = MainWindow._close_tab
     _close_tab_at = MainWindow._close_tab_at
     _close_current_tab = MainWindow._close_current_tab

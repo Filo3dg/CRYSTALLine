@@ -161,10 +161,12 @@ class MainWindow(QMainWindow):
         # Workers in flight. Held because a dropped one is collected mid-run and
         # takes its QThread down with it.
         self._workers: list = []
-        # Files waiting to be read, and whether one is being read now: read one
-        # at a time, off the main thread (see _load_path).
+        # Files waiting to be read, as (path, comes to the front), and the one
+        # being read now: read one at a time, off the main thread (see _load_path).
         self._pending_reads: list = []
         self._reading = False
+        self._reading_path: Optional[str] = None
+        self._reader: Optional[Worker] = None
         # What each plot dialog was last set to, keyed by dialog. These are tuned
         # rather than answered — a broadening width, a frequency window — so
         # reopening one starts from the last accepted settings, not the defaults.
@@ -247,6 +249,13 @@ class MainWindow(QMainWindow):
         self._cell_status = QLabel()
         self._cell_status.setStyleSheet("color: palette(mid); padding: 0 8px;")
         self.statusBar().addPermanentWidget(self._cell_status)
+
+        # Which file is being read, shown only while one is — where a loading
+        # screen would have stood between the user and the tab already open.
+        self._reading_status = QLabel()
+        self._reading_status.setStyleSheet("color: palette(mid); padding: 0 8px;")
+        self.statusBar().addPermanentWidget(self._reading_status)
+        self._reading_status.hide()
 
         # Shown only while editing is on.
         self._editing_status = QLabel("● Editing mode")
@@ -384,16 +393,21 @@ class MainWindow(QMainWindow):
             self._tab = previous
         return tab
 
-    def _add_tab(self, structure: Optional[Structure] = None) -> FileTab:
-        """Open a new tab (holding ``structure``, or empty) and switch to it."""
+    def _add_tab(self, structure: Optional[Structure] = None, show: bool = True) -> FileTab:
+        """Open a new tab (holding ``structure``, or empty) and switch to it.
+
+        ``show=False`` sets it behind the tab on screen instead — a file read in
+        while another is being worked in. (The window's first tab is shown
+        whatever is asked: there is nothing else to show.)
+        """
         settings = None if self._tab is None else self.viewport.renderer.settings
         tab = self._create_tab(structure, settings)
         self._tabs.append(tab)
         index = self._file_tabs.addTab(tab.viewport, UNTITLED)
         self._update_tab_labels()
-        if self._file_tabs.currentIndex() != index:
+        if show and self._file_tabs.currentIndex() != index:
             self._file_tabs.setCurrentIndex(index)  # -> _on_file_tab_changed
-        if self._tab is not tab:
+        if self._tab is None or (show and self._tab is not tab):
             self._activate_tab(tab)  # the first tab: Qt made it current on adding
         if settings is None:
             self._follow_theme_background()  # a fresh ground matches the theme
@@ -439,6 +453,7 @@ class MainWindow(QMainWindow):
         finally:
             self._switching_tabs = False
         self._refresh_chrome()
+        self._show_notice(tab)  # read in behind: what it could not read is said now
 
     def _take_tab_for_file(self) -> FileTab:
         """The tab a file being opened goes into: this one if it is empty, else a new one."""
@@ -1528,14 +1543,12 @@ class MainWindow(QMainWindow):
         self._apply_cell_view()
         return reps
 
-    def _run_busy(self, work, message: str, done, failed_title: str, failed=None) -> None:
+    def _run_busy(self, work, message: str, done, failed_title: str) -> None:
         """Run ``work`` off the main thread behind the busy overlay.
 
         ``done`` receives the result back on the UI thread, which is where any
         drawing has to happen: VTK and Qt widgets belong to the thread that made
-        them, so only the computation moves. An exception is reported under
-        ``failed_title`` — or handed to ``failed`` instead, when given, for a
-        caller with more to do than say so.
+        them, so only the computation moves.
         """
         self._busy.start(message)
         worker = Worker(work)
@@ -1553,10 +1566,7 @@ class MainWindow(QMainWindow):
 
         def on_failed(exc) -> None:
             cleanup()
-            if failed is not None:
-                failed(exc)
-            else:
-                QMessageBox.critical(self, failed_title, str(exc))
+            QMessageBox.critical(self, failed_title, str(exc))
 
         worker.finished.connect(lambda result: (cleanup(), done(result)))
         worker.failed.connect(on_failed)
@@ -2432,8 +2442,9 @@ class MainWindow(QMainWindow):
         :func:`~crystalline.ui.file_tabs.openable`.
         """
         if to_open:
-            for path in to_open:
-                self._load_path(path)  # read in the background, in this order
+            for index, path in enumerate(to_open):
+                # read in the background, in this order; the first to the front
+                self._load_path(path, front=index == 0)
             done = to_open
         else:
             done = [path for path in to_import if self._import_path(path)]
@@ -2479,71 +2490,135 @@ class MainWindow(QMainWindow):
             "Structure files (*.out *.gui *.f34 *.cif);;CRYSTAL files (*.out *.gui *.f34);;"
             "CIF files (*.cif);;All files (*)",
         )
-        for path in paths:
-            self._load_path(path)
+        for index, path in enumerate(paths):
+            # The first comes to the front, to be worked in while the rest are
+            # read and set behind it.
+            self._load_path(path, front=index == 0)
 
     def _open_folder(self) -> str:
         """Where the Open dialog starts: beside the file on screen, if there is one."""
         path = self._tab.path if self._tab is not None else None
         return os.path.dirname(path) if path else ""
 
-    def _load_path(self, path: str) -> None:
+    def _load_path(self, path: str, front: bool = True) -> None:
         """Open ``path`` in a tab of its own, reading it off the main thread.
 
         Reading is the slow part — CRYSTALClear walks the whole output, and
         finding out which plots, orbitals and anharmonic data it holds walks it
-        again — so :func:`_read_file` does all of it on a worker, behind the busy
-        overlay, and the window stays responsive while a large output is read.
-        Files are read one at a time, in the order given: several opened at
-        once arrive as tabs in that order, and the busy overlay says which is
-        being read.
+        again — so :func:`_read_file` does all of it on a worker, and nothing
+        stands between the user and the window meanwhile: no overlay, only the
+        status bar saying what is being read. Files are read one at a time, in
+        the order given.
+
+        ``front`` is whether the file's tab comes to the front when it is ready.
+        Of several opened at once only the first does, so that it can be worked
+        in while the rest are read and set behind it, one by one, without
+        taking the screen from it.
 
         Split out of :meth:`_open_file` so a file arriving any other way — dropped
         on the window — goes through exactly the same sequence (see
         :meth:`_show_read_file` for what that is).
         """
-        self._pending_reads.append(path)
+        self._pending_reads.append((path, front))
         if not self._reading:
             self._read_next()
+        else:
+            self._update_reading_status()
 
     def _read_next(self) -> None:
         """Start reading the next queued file, if there is one."""
         if not self._pending_reads:
             self._reading = False
+            self._reader = None
+            self._update_reading_status()
             return
         self._reading = True
-        path = self._pending_reads.pop(0)
-        name = os.path.basename(path)
+        path, front = self._pending_reads.pop(0)
+        self._reading_path = path
+        self._update_reading_status()
 
         def shown(read) -> None:
             try:
-                self._show_read_file(path, read)
+                self._show_read_file(path, read, front)
             finally:
                 self._read_next()
 
         def failed(exc) -> None:
             # A file that will not read opens no tab, and stops nothing queued
             # behind it.
-            QMessageBox.critical(self, "Load failed", f"{name}:\n{exc}")
+            QMessageBox.critical(self, "Load failed", f"{os.path.basename(path)}:\n{exc}")
             self._read_next()
 
-        self._run_busy(lambda: _read_file(path), f"Reading {name}…", shown,
-                       "Load failed", failed=failed)
+        # Not through _run_busy: no overlay, and the tab bar stays live — the
+        # result goes to a tab of its own, not to whichever one is on screen.
+        # Held here until the next is started: a dropped worker takes its
+        # thread down with it.
+        self._reader = Worker(lambda: _read_file(path))
+        self._reader.finished.connect(shown)
+        self._reader.failed.connect(failed)
+        self._reader.start()
 
-    def _show_read_file(self, path: str, read: "_ReadFile") -> None:
-        """Put a file that has been read into a tab, and the window in step with it.
+    def _update_reading_status(self) -> None:
+        """Say in the status bar which file is being read, and how many are to come."""
+        label = getattr(self, "_reading_status", None)
+        if label is None:
+            return
+        if not self._reading:
+            label.hide()
+            return
+        text = f"Reading {os.path.basename(self._reading_path)}…"
+        if self._pending_reads:
+            text += f"  {len(self._pending_reads)} more to come"
+        label.setText(text)
+        label.show()
 
-        The file goes into the tab on screen if that one is empty — the window
-        opens on an empty tab, and the first file takes it over — and into a new
-        tab otherwise. There is a lot to do, and all of it on the UI thread:
-        whatever the tab showed before has to be let go, the supercell and the
-        tiling reset, and eight menu sections re-enabled against what this file
-        turns out to contain — from what :func:`_read_file` found, not by
-        reading the file again.
+    def _show_read_file(self, path: str, read: "_ReadFile", front: bool = True) -> None:
+        """Put a file that has been read into a tab.
+
+        In front — the tab on screen, if that one is empty (the window opens on
+        an empty tab, and the first file takes it over), else a new tab brought
+        to the front — or, when not ``front``, in a new tab set behind the one
+        being worked in. That one is built the same way, with the window acting
+        on it (:meth:`_acting_on`), and the menus are then set back to the tab on
+        screen.
+        """
+        if front or self._tab.is_blank():
+            tab = self._take_tab_for_file()
+            self._fill_tab(tab, path, read)
+            self._show_notice(tab)
+            return
+        tab = self._add_tab(show=False)
+        with self._acting_on(tab):
+            self._fill_tab(tab, path, read)
+        self._refresh_chrome()  # the menus are the tab on screen's, again
+
+    def _show_notice(self, tab: FileTab) -> None:
+        """Say what opening ``tab``'s file had to leave out — once, when it is seen.
+
+        An output whose modes could not be read opens with its geometry alone,
+        and nothing else says so: the Phonons panel of a file with no modes at
+        all looks exactly the same, so the file would appear to have been a
+        geometry all along. For a tab read in behind the one being worked in,
+        that is said when it is first brought to the front, not in the middle
+        of the work.
+        """
+        notice, tab.notice = tab.notice, None
+        if notice:
+            QMessageBox.warning(self, "Modes not read",
+                                f"{os.path.basename(tab.path or '')}:\n{notice}")
+
+    def _fill_tab(self, tab: FileTab, path: str, read: "_ReadFile") -> None:
+        """Load what was read into ``tab``, the tab the window is acting on.
+
+        There is a lot to do, and all of it on the UI thread: whatever the tab
+        showed before has to be let go, the supercell and the tiling reset, and
+        eight menu sections re-enabled against what this file turns out to
+        contain — from what :func:`_read_file` found, not by reading the file
+        again.
         """
         result = read.loaded
-        tab = self._take_tab_for_file()
         tab.path = path
+        tab.notice = result.note
         tab.capabilities.update(
             {(key, read.output_path): found for key, found in read.capabilities.items()}
         )
@@ -2586,12 +2661,8 @@ class MainWindow(QMainWindow):
         # A new file starts its own timeline: nothing about the last one is
         # worth stepping back into.
         self._reset_undo()
-        # An output whose modes could not be read opens with its geometry alone.
-        # Said here because nothing else says it: the Phonons panel of a file
-        # with no modes at all looks exactly the same, so without this the file
-        # appears to have been a geometry all along.
-        if result.note:
-            QMessageBox.warning(self, "Modes not read", result.note)
+        # A note on what could not be read (modes, say) is kept on the tab and
+        # said when the tab is seen — see _show_notice.
 
     def _import_atoms(self) -> None:
         """Read atoms from an .xyz/.pdb/.cif file and add them to the current structure.
