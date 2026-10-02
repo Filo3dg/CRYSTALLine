@@ -159,6 +159,7 @@ class _Window(QMainWindow):
     _close_current_tab = MainWindow._close_current_tab
     _take_tab_for_file = MainWindow._take_tab_for_file
     _realise_tab = MainWindow._realise_tab
+    _settle_tab = MainWindow._settle_tab
     _show_notice = MainWindow._show_notice
     _tab_for_page = MainWindow._tab_for_page
     _on_file_tab_changed = MainWindow._on_file_tab_changed
@@ -363,6 +364,28 @@ def test_a_tab_looked_at_for_the_first_time_is_drawn_at_once_with_its_file(qapp)
     window._file_tabs.setCurrentIndex(0)
     window._file_tabs.setCurrentIndex(1)                  # back again: its view is up already
     assert window.events.count(("drawn", waiting)) == 1
+
+
+def test_closing_the_tab_in_front_shows_the_one_behind_it_finished(qapp, monkeypatch):
+    """Closing the tab on screen is the other way a tab is first looked at, and
+    Qt brings the one behind it forward from inside the close. It is laid out
+    as well as drawn before the window is shown again: a frame earlier, its
+    Info panel showed scrollbars its rows did not need yet, light bars down and
+    across a dark dock."""
+    from PySide6.QtCore import QEvent
+
+    window = _Window()
+    first = window.open("/runs/urea.out")
+    waiting = window.open("/runs/ice.out", front=False)
+    monkeypatch.setattr(QApplication, "sendPostedEvents", staticmethod(
+        lambda _receiver=None, kind=0: window.events.append(("laid out", kind))))
+
+    window._close_tab(first)
+
+    assert window._tab is waiting
+    assert window.events[-3:] == [("filled", waiting),
+                                  ("laid out", QEvent.LayoutRequest),
+                                  ("drawn", waiting)]
 
 
 def test_a_background_result_lands_in_the_tab_it_was_started_in(qapp, monkeypatch):
