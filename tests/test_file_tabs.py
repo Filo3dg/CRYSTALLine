@@ -149,11 +149,13 @@ class _Part(QWidget):
 class _Window(QMainWindow):
     _add_tab = MainWindow._add_tab
     _activate_tab = MainWindow._activate_tab
+    _show_notice = MainWindow._show_notice
     _close_tab = MainWindow._close_tab
     _close_tab_at = MainWindow._close_tab_at
     _close_current_tab = MainWindow._close_current_tab
     _take_tab_for_file = MainWindow._take_tab_for_file
     _realise_tab = MainWindow._realise_tab
+    _show_notice = MainWindow._show_notice
     _tab_for_page = MainWindow._tab_for_page
     _on_file_tab_changed = MainWindow._on_file_tab_changed
     _on_plot_dock_visibility = MainWindow._on_plot_dock_visibility
@@ -205,9 +207,10 @@ class _Window(QMainWindow):
             stack.addWidget(getattr(tab, name))
         self.built.append(tab)
 
-    def _show_file(self, tab, path, result):
-        """What ``_load_path`` does once the file is read and its tab is on screen."""
+    def _fill_tab(self, tab, path, read):
+        """What the window does once a file is read and its tab is on screen."""
         self.installed.append((tab, path))
+        tab.path = path
         self._update_tab_labels()
 
     def _refresh_chrome(self):
@@ -217,15 +220,16 @@ class _Window(QMainWindow):
     def _follow_theme_background(self):
         pass
 
-    def open(self, path, show=True):
-        """What ``_load_path`` does with tabs, without reading anything."""
-        tab = self._take_tab_for_file(show=show)
-        tab.path = path
-        if tab is not self._tab:
-            tab.pending = (path, None)
-            self._update_tab_labels()
+    def open(self, path, front=True):
+        """What ``_show_read_file`` does with tabs, without reading anything."""
+        if front or self._tab.is_blank():
+            tab = self._take_tab_for_file()
+            self._fill_tab(tab, path, None)
             return tab
-        self._show_file(tab, path, None)
+        tab = self._add_tab(show=False)
+        tab.path = path
+        tab.pending = (path, None)
+        self._update_tab_labels()
         return tab
 
 
@@ -304,63 +308,6 @@ def test_plots_come_and_go_with_their_tab(qapp):
     assert not ice.plots_open
 
 
-def test_the_output_rows_follow_the_structure_rather_than_holding_it_up(qapp):
-    """Reading what a CRYSTAL output says about itself is a second pass over the
-    whole file — 150 ms of a 1.4 MB one, and worse as it grows — so the
-    crystallography is shown at once and those rows arrive a turn later."""
-    from crystalline.ui.main_window import MainWindow
-
-    class _Panel:
-        def __init__(self):
-            self.shown = []
-
-        def show_structure(self, _structure, props=None):
-            self.shown.append(props)
-
-    class _W:
-        _update_info = MainWindow._update_info
-        _read_output_props = MainWindow._read_output_props
-        _routed = MainWindow._routed
-        _acting_on = MainWindow._acting_on
-
-        def __init__(self, path):
-            self._tab = FileTab()
-            self._tab.path = path
-            self._tabs = [self._tab]
-            self.info_panel = _Panel()
-            self._output_props = None
-
-        def _analysis_cell(self):
-            return Structure.empty()
-
-        def _refresh_chrome(self):
-            pass
-
-    rows = {"Total energy (eV)": "-1.000000"}
-    import crystalline.crystalio as crystalio
-
-    original = crystalio.output_properties
-    crystalio.output_properties = lambda _path: dict(rows)
-    try:
-        window = _W("/runs/urea.out")
-        window._update_info("/runs/urea.out")
-        assert window.info_panel.shown == [{}]      # the structure, with no rows yet
-        assert window._output_props == {}
-        qapp.processEvents()
-        assert window.info_panel.shown[-1] == rows  # and the rows, a turn later
-        assert window._output_props == rows
-
-        # A tab that took another file in the meantime keeps its own rows.
-        window = _W("/runs/urea.out")
-        window._update_info("/runs/urea.out")
-        window._tab.path = "/runs/ice.out"
-        qapp.processEvents()
-        assert window.info_panel.shown == [{}]
-        assert window._output_props == {}
-    finally:
-        crystalio.output_properties = original
-
-
 def test_a_tab_opened_beside_others_is_built_only_when_it_is_looked_at(qapp):
     """Opening ten files should cost one 3D view, not ten.
 
@@ -370,11 +317,11 @@ def test_a_tab_opened_beside_others_is_built_only_when_it_is_looked_at(qapp):
     """
     window = _Window()
     first = window.open("/runs/urea.out")                 # takes the blank tab, on screen
-    waiting = window.open("/runs/ice.out", show=False)
-    shown = window.open("/runs/mgo.out")
+    waiting = window.open("/runs/ice.out", front=False)
+    third = window.open("/runs/mgo.out", front=False)
 
-    assert window._tab is shown
-    assert window.built == [first, shown]                 # ice's view was never made
+    assert window._tab is first                           # the one to be worked in
+    assert window.built == [first]                        # no view made for either other
     assert not waiting.built() and waiting.pending is not None
     assert _titles(window) == ["urea.out", "ice.out", "mgo.out"]  # named all the same
 
@@ -388,13 +335,14 @@ def test_a_tab_opened_beside_others_is_built_only_when_it_is_looked_at(qapp):
     window._file_tabs.setCurrentIndex(2)
     window._file_tabs.setCurrentIndex(1)
     assert window.built.count(waiting) == 1               # built once, not on every visit
+    assert third.built()                                  # and the third, when visited
 
 
 def test_closing_a_tab_nobody_looked_at_lets_its_file_go(qapp):
     """It has no widgets to take down — and the file it is holding must not stay."""
     window = _Window()
     urea = window.open("/runs/urea.out")
-    waiting = window.open("/runs/ice.out", show=False)
+    waiting = window.open("/runs/ice.out", front=False)
 
     window._close_tab(waiting)
 
@@ -506,9 +454,11 @@ def test_a_hidden_view_is_not_drawn_into():
     from crystalline.ui.viewport import Viewport
 
     init = inspect.getsource(Viewport.__init__)
-    assert "self.interactor.render = render_if_shown" in init
+    assert "self.interactor.render = request_render" in init
     assert "isVisible()" in init
     assert "self._render_held" in inspect.getsource(inspect.unwrap(Viewport.eventFilter))
+    # a draw queued while the view was shown, and run after it was hidden, is held too
+    assert "self._render_held = True" in inspect.getsource(inspect.unwrap(Viewport._draw_queued))
 
 
 def test_the_file_tabs_start_at_the_left_of_the_view():

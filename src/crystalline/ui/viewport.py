@@ -92,16 +92,27 @@ class Viewport(QWidget):
         # rendering there corrupts the OpenGL state the visible one shares — the
         # second file opened aborted the app on shader errors (pyvistaqt #762).
         # So a render asked of a hidden view is held until it is shown.
+        #
+        # And one asked of the view on screen is drawn once, on the next turn of
+        # the event loop, however many were asked for in between. Opening a file
+        # asked fourteen times — the structure, the cell, the cleared orbital and
+        # density, the selection, the measurements, the symmetry elements, the
+        # ellipsoids, the phonon arrows — each a full draw of a scene the next
+        # one replaced, and together most of the time a new tab took to appear.
+        # A screenshot is not affected: VTK draws the scene itself to capture it.
         self._render_held = False
-        render_now = self.interactor.render
+        self._render_queued = False
+        self._render_now = self.interactor.render
 
-        def render_if_shown(*args, **kwargs):
+        def request_render(*_args, **_kwargs):
             if not self.interactor.isVisible():
                 self._render_held = True
-                return None
-            return render_now(*args, **kwargs)
+            elif not self._render_queued:
+                self._render_queued = True
+                QTimer.singleShot(0, self._draw_queued)
+            return None
 
-        self.interactor.render = render_if_shown
+        self.interactor.render = request_render
         self.renderer = StructureRenderer(self.interactor)
         self._structure: Optional[Structure] = None
         self._reference_cell: Optional[np.ndarray] = None  # original cell, for axis views
@@ -129,6 +140,15 @@ class Viewport(QWidget):
         # view is (re)entered/refocused. Do NOT do it on plain presses —
         # SetInteractorStyle during the press that starts a drag disrupts it.
         self.interactor.installEventFilter(self)
+
+    @guard()
+    def _draw_queued(self) -> None:
+        """Draw, once, whatever was asked of the view since it was last drawn."""
+        self._render_queued = False
+        if self.interactor.isVisible():
+            self._render_now()
+        else:
+            self._render_held = True  # hidden in the meantime: drawn when shown
 
     def _set_camera_busy(self, busy: bool) -> None:
         """Announce that the camera started or stopped moving (idempotent)."""

@@ -13,26 +13,6 @@ If the output contains a vibrational calculation, phonon modes are read with it.
 If it does not, the geometry alone is shown and the remaining functions are
 unaffected.
 
-## Several files at once
-
-Each file opens in a tab of its own above the 3D view, so several can be open
-together and compared by switching between them; several files can be chosen
-in the Open dialog, or dropped, at once. The window starts with an empty tab,
-which the first file takes over.
-
-A tab keeps everything that belongs to its file: the view and its camera, the
-cell and supercell shown, the phonon modes, the plots, measurements and lattice
-planes, the undo history and the display settings. The panels around the view
-show the tab on screen. A new tab starts from the display settings of the one
-open when it was made, and each changes independently from then on; editing
-mode applies to whichever tab is shown.
-
-Tabs are named after their files, with the folder added when two files share a
-name — `0GPa/fort.34` and `1GPa/fort.34` — and can be dragged to reorder them.
-**File → Close tab** ({kbd}`Ctrl+W`) closes the one on screen, and **View → Next
-tab** and **Previous tab** ({kbd}`Ctrl+Tab`, {kbd}`Ctrl+Shift+Tab`) move between
-them. While a plot or an orbital is being computed, the tabs wait for it.
-
 ## Working in the calculation's folder
 
 CRYSTAL writes more than the output file. Several external units might be 

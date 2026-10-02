@@ -105,6 +105,10 @@ class FileTab:
         # once: some of the probes read the whole .out, and switching tab must
         # not re-read every file each time.
         self.capabilities: dict = {}
+        # What opening the file had to leave out (its modes, say), still to be
+        # said: a tab read in behind the one being worked in says it when it is
+        # first brought to the front.
+        self.notice: Optional[str] = None
 
     def built(self) -> bool:
         """Whether this tab's widgets exist yet (it has been shown at least once)."""

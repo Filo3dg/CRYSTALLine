@@ -75,14 +75,13 @@ def _window():
         def __init__(self):
             self._drop_hint = _Hint()
             self.opened = []
-            self.shown = []       # whether each file was switched to as it opened
+            self.fronts = []  # whether each opened file comes to the front
             self.imported = []
             self.messages = []
 
-        def _load_path(self, path, show=True):
-            self.opened.append(path)
-            self.shown.append(show)
-            return True
+        def _load_path(self, path, front=True):
+            self.opened.append(path)  # queued to be read; returns nothing
+            self.fronts.append(front)
 
         def _import_path(self, path):
             self.imported.append(path)
@@ -219,11 +218,12 @@ def test_dropping_several_files_opens_every_one_and_says_what_was_left(qapp):
     qapp.processEvents()
 
     assert window.opened == ["/tmp/run.out", "/tmp/other.cif"]
-    # Only the tab left on screen is built as the drop is handled; the others
-    # wait in their tabs until they are clicked.
-    assert window.shown == [False, True]
+    # The first to work in; the other is set behind it, and is not built at all
+    # until it is clicked.
+    assert window.fronts == [True, False]
     assert len(window.messages) == 1
-    assert "Opened 2 files — 1 other dropped file ignored" in window.messages[0]
+    # "Opening": the files are read in the background, so they are not open yet
+    assert "Opening 2 files — 1 other dropped file ignored" in window.messages[0]
 
 
 def test_atoms_are_not_imported_into_a_structure_about_to_be_replaced(qapp):
