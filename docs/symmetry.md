@@ -30,8 +30,8 @@ One-dimensional systems are not otherwise supported; see
 A space group can be written in several settings, and a crystal computed in a
 non-standard one has lattice parameters its standard description does not
 share. A P2₁/n crystal with c = 8.97 Å and β = 105.5° is, in the standard
-P2₁/c setting, a cell with c = 10.43 Å and β = 124.1°: the same crystal, the
-same volume, another cell.
+P2₁/c setting, a cell with c = 10.43 Å and β = 124.1°: same crystal,
+same volume, different cell.
 
 The **Cell** box at the top of the Info panel chooses between the two:
 
