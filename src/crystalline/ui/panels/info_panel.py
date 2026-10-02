@@ -6,8 +6,8 @@ the CRYSTAL ``.out`` file says about itself — how the run was set up (code,
 task, functional, k-point mesh, basis size, SCF thresholds) and what it
 computed (energy, band gap, Fermi energy).
 
-A crystal can be described in its own cell, as computed, or in pymatgen's
-standard conventional cell — two sets of lattice parameters for one crystal
+A crystal can be described in its own cell, the one its file holds, or in
+pymatgen's standard conventional cell — two sets of lattice parameters for one crystal
 whenever the calculation was run in a non-standard setting (P2₁/n rather than
 P2₁/c, say). The **Cell** box at the top chooses which one the rows describe.
 """
@@ -21,8 +21,10 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -33,8 +35,9 @@ from crystalline.core.structure import Structure
 
 _CELL_TOOLTIP = (
     "Which cell the lattice parameters describe.\n\n"
-    "As computed: the cell the calculation used (the one drawn in the 3D view), "
-    "with the space group named in that cell's setting — P2₁/n stays P2₁/n.\n"
+    "As in the file: the cell as the file holds it — for a CRYSTAL output, the "
+    "cell the calculation ran in — with the space group named in that cell's "
+    "setting, so P2₁/n stays P2₁/n.\n"
     "Standard setting: the conventional standard cell, which can be a "
     "different setting of the same group, with other lattice parameters."
 )
@@ -65,20 +68,33 @@ class InfoPanel(QWidget):
         self._scroll.setWidget(content)
         layout = QVBoxLayout(content)
 
-        # Above the rows it governs, where a change is seen to change them.
         self._cell = QComboBox()
         for key, label in CELL_CHOICES:
             self._cell.addItem(label, key)
         self._cell.setCurrentIndex(self._cell.findData(DEFAULT_CHOICE))
         self._cell.setToolTip(_CELL_TOOLTIP)
         self._cell.currentIndexChanged.connect(self._on_cell_changed)
-        choice = QFormLayout()
-        choice.setContentsMargins(0, 0, 0, 0)
-        choice.addRow("Cell:", self._cell)
-        layout.addLayout(choice)
+        # As wide as its longest entry and no wider. A form row stretched it
+        # across the whole dock, which made a two-item choice look like the most
+        # important thing in the panel.
+        self._cell.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self._cell.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
 
+        # Inside the group it governs, at the top of it: the choice belongs to
+        # the Crystallography rows — it is which cell they describe — so it sits
+        # within that heading rather than floating above it as a section of its
+        # own. The rows are refilled on every edit, so the choice is kept out of
+        # that form and in a box around it.
         self._crystal_group = QGroupBox("Crystallography")
-        self._crystal_form = _form(self._crystal_group)
+        crystal_box = QVBoxLayout(self._crystal_group)
+        choice = QHBoxLayout()
+        choice.setContentsMargins(0, 0, 0, 0)
+        choice.addWidget(QLabel("Cell:"))
+        choice.addWidget(self._cell)
+        choice.addStretch(1)
+        crystal_box.addLayout(choice)
+        self._crystal_form = _form(None)
+        crystal_box.addLayout(self._crystal_form)
         layout.addWidget(self._crystal_group)
 
         self._output_group = QGroupBox("CRYSTAL output")
@@ -94,7 +110,7 @@ class InfoPanel(QWidget):
         """Analyse ``structure`` and display it, with optional CRYSTAL-output rows.
 
         ``structure`` should be one clean cell — the cell on screen folded back
-        from any supercell or boundary images — since "as computed" describes
+        from any supercell or boundary images — since "as in the file" describes
         exactly the cell it is handed.
         """
         if structure is None or len(structure) == 0:
@@ -195,7 +211,7 @@ def _reduction_rows(structure: Structure) -> List[Tuple[str, str]]:
         return [("Treated as", "a reduced symmetry")]
 
 
-def _form(parent: QWidget) -> QFormLayout:
+def _form(parent: Optional[QWidget]) -> QFormLayout:
     """A form whose rows survive a narrow dock.
 
     Values used to be clipped at the right edge when the dock was narrower than
@@ -203,7 +219,7 @@ def _form(parent: QWidget) -> QFormLayout:
     ``WrapLongRows`` drops the value onto its own line instead, and the fields
     are allowed to shrink rather than forcing the dock wider.
     """
-    form = QFormLayout(parent)
+    form = QFormLayout(parent) if parent is not None else QFormLayout()
     form.setRowWrapPolicy(QFormLayout.WrapLongRows)
     form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
     return form

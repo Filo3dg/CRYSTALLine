@@ -9,7 +9,7 @@
 | `.cif` | structure |
 
 These files may also be opened by dropping them on the window. Each file opens
-in a tab of its own.
+in a tab of its own; see [Several files at once](first-steps.md#several-files-at-once).
 
 ## Import into the current structure
 

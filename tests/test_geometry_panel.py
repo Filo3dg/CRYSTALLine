@@ -454,15 +454,14 @@ def _plane_panel():
 def test_a_plane_is_drawn_from_its_indices_alone(qapp):
     panel, structure, drawn = _plane_panel()
     _type_miller(panel, 1, 1, 1)
-    assert panel._spacing_label.text() == "d 3.256 Å"
-    panel._plane_offset.setValue(0.5)
     panel._add_plane_btn.click()                   # no atom selected, nothing fitted
 
+    # Typed indices alone put the plane through the origin; where else it might
+    # go is said by picking an atom, not by a figure in units of d.
     (plane,) = panel.lattice_planes()
-    assert plane.miller == (1, 1, 1) and plane.offset == 0.5 and not plane.family
+    assert plane.miller == (1, 1, 1) and plane.offset == 0.0 and not plane.family
     planes, cell = drawn[-1]
     assert planes == [plane] and np.allclose(cell, structure.cell)
-    assert panel._plane_list.item(0).text() == "(1 1 1) at 0.50 d · d 3.256 Å · 3 atoms"  # Cl on a, b, c at ½
 
 
 def test_a_plane_through_the_selected_atom_passes_through_it(qapp):
@@ -479,7 +478,6 @@ def test_a_plane_through_the_selected_atom_passes_through_it(qapp):
 
     (plane,) = panel.lattice_planes()
     assert plane.offset == pytest.approx(0.5)      # Cl at (½ 0 0): h x + k y + l z = ½
-    assert panel._plane_offset.value() == pytest.approx(0.5)
     assert 1 in lp.atoms_on(np.asarray(structure.cell), plane, structure.positions)
 
 
@@ -487,17 +485,16 @@ def test_a_family_and_the_atoms_on_it_can_be_selected(qapp):
     panel, structure, _drawn = _plane_panel()
     _type_miller(panel, 1, 1, 1)
     panel._family_check.setChecked(True)
-    panel._plane_offset.setValue(0.5)
     panel._add_plane_btn.click()
     assert panel.lattice_planes()[0].family
-    assert "family +0.50 d" in panel._plane_list.item(0).text()
 
     chosen = []
     panel.select_atoms_requested.connect(chosen.append)
     assert not panel._plane_select_btn.isEnabled()  # a plane has to be picked in the list
     panel._plane_list.item(0).setSelected(True)
     panel._plane_select_btn.click()
-    assert chosen and {structure.symbols[i] for i in chosen[0]} == {"Cl"} and len(chosen[0]) == 4
+    # The family runs through the origin, so it is the Na that lie on it.
+    assert chosen and {structure.symbols[i] for i in chosen[0]} == {"Na"}
 
 
 def test_each_plane_gets_its_own_colour_and_unticking_hides_it(qapp):
@@ -537,7 +534,7 @@ def test_zero_indices_name_no_plane(qapp):
     panel, _structure, _drawn = _plane_panel()
     _type_miller(panel, 0, 0, 0)
     assert not panel._add_plane_btn.isEnabled()
-    assert panel._spacing_label.text() == "d —"
+    assert not panel._plane_atom_btn.isEnabled()
 
 
 def test_hexagonal_planes_are_written_with_four_indices(qapp):
@@ -547,10 +544,10 @@ def test_hexagonal_planes_are_written_with_four_indices(qapp):
     panel = GeometryPanel(Structure.from_ase(zinc))
     panel.set_miller_cell(zinc.cell[:])
     _type_miller(panel, 1, 0, 0)
-    assert not panel._i_label.isHidden() and panel._i_label.text() == "i -1"
-    assert "(h k i l)" in panel._plane_hint.text()
+    assert not panel._i_label.isHidden() and panel._i_label.value() == -1
+    assert not panel._i_label.isEnabled()          # fixed by h and k, not typed
     panel._add_plane_btn.click()
-    assert panel._plane_list.item(0).text().startswith("(1 0 -1 0) at 0.00 d")
+    assert panel._plane_list.item(0).text().startswith("(1 0 -1 0) · d ")
 
     panel.set_miller_cell(np.asarray(_nacl().cell))
     assert panel._i_label.isHidden()
@@ -571,9 +568,7 @@ def test_planes_outlive_a_change_of_view_but_not_of_crystal(qapp):
 def test_a_molecule_offers_no_lattice_planes_but_a_fit(qapp):
     panel = GeometryPanel(_water())
     panel.set_miller_cell(None)
-    assert panel._plane_hint.text() == (
-        "A molecule has no lattice planes, but a plane can be fitted to its atoms.")
-    assert not panel._add_plane_btn.isEnabled()
+    assert not panel._add_plane_btn.isEnabled()     # no lattice, so no lattice plane
     assert not panel._miller_boxes[0].isEnabled()
     panel.set_selection([0, 1, 2])
     assert panel._fit_plane_btn.isEnabled()
@@ -676,25 +671,27 @@ def test_the_panel_is_three_sections_that_fold_and_are_remembered(qapp, sections
     panel = GeometryPanel(_water())
     titles = [section.header.text() for section in panel._sections.values()]
     assert titles == ["MEASURE", "LATTICE PLANES", "ATOMS"]
-    assert all(panel.section_open(key) for key in panel._sections)   # open the first time
+    # Folded the first time: three sections of tools open at once fill the dock
+    # and bury whichever one is in use.
+    assert not any(panel.section_open(key) for key in panel._sections)
 
     panel._sections["atoms"].header.click()
-    assert not panel.section_open("atoms") and panel._sections["atoms"].body.isHidden()
-    assert sections_remembered == {"geometry/atoms": False}
+    assert panel.section_open("atoms") and not panel._sections["atoms"].body.isHidden()
+    assert sections_remembered == {"geometry/atoms": True}
 
     other = GeometryPanel(_water())                  # another tab's, or the next session's
-    assert not other.section_open("atoms") and other.section_open("measure")
+    assert other.section_open("atoms") and not other.section_open("measure")
 
 
 def test_a_panel_shown_again_takes_up_the_sections_as_last_left(qapp):
     """Each tab has its own panel: folding a section in one, then switching to
     another tab, finds it folded there too."""
     first, second = GeometryPanel(_water()), GeometryPanel(_water())
-    first._sections["measure"].header.click()        # folded in the tab on screen
-    assert second.section_open("measure")            # the hidden tab's has not been shown since
+    first._sections["measure"].header.click()        # opened in the tab on screen
+    assert not second.section_open("measure")        # the hidden tab's has not been shown since
     second.show()
     qapp.processEvents()
-    assert not second.section_open("measure")
+    assert second.section_open("measure")
     second.hide()
 
 
@@ -705,3 +702,79 @@ def test_folding_a_section_never_widens_the_dock(qapp, sections_remembered):
     sections_remembered.clear()
     unfolded = GeometryPanel(_nacl())
     assert folded.minimumSizeHint().width() == unfolded.minimumSizeHint().width()
+
+
+def test_the_plane_buttons_are_colour_remove_and_clear_all(qapp):
+    """Three actions on what is listed; the atom-driven ones sit with the other
+    ways a plane gets made, not among them."""
+    panel, _structure, _drawn = _plane_panel()
+    _type_miller(panel, 1, 1, 1)
+    panel._add_plane_btn.click()
+    _type_miller(panel, 1, 0, 0)
+    panel._add_plane_btn.click()
+    assert len(panel.lattice_planes()) == 2
+
+    assert not panel._plane_clear_btn.isEnabled() or panel._planes  # live only with planes
+    panel._plane_clear_btn.click()
+
+    assert panel.lattice_planes() == [] and panel._plane_list.count() == 0
+    assert not panel._plane_clear_btn.isEnabled()   # nothing left to clear
+
+
+def test_clearing_needs_no_selection_but_removing_does(qapp):
+    panel, _structure, _drawn = _plane_panel()
+    _type_miller(panel, 1, 1, 1)
+    panel._add_plane_btn.click()
+
+    assert panel._plane_clear_btn.isEnabled()       # something to clear
+    assert not panel._plane_remove_btn.isEnabled()  # but nothing picked to remove
+    panel._plane_list.item(0).setSelected(True)
+    assert panel._plane_remove_btn.isEnabled()
+
+
+def test_the_position_slider_moves_a_plane_along_its_normal(qapp):
+    """A plane is placed by eye against the atoms far more often than it is
+    calculated, so where it sits is a slider beside its opacity rather than a
+    figure typed before it is drawn."""
+    panel, _structure, drawn = _plane_panel()
+    _type_miller(panel, 1, 1, 1)
+    panel._add_plane_btn.click()
+    assert panel.lattice_planes()[0].offset == 0.0
+
+    panel._plane_list.item(0).setSelected(True)
+    panel._plane_offset.set_value(0.5)
+
+    assert panel.lattice_planes()[0].offset == pytest.approx(0.5)
+    assert drawn[-1][0][0].offset == pytest.approx(0.5)   # and the view was told
+    assert "at 0.50 d" in panel._plane_list.item(0).text()   # and the row says so
+
+
+def test_picking_a_plane_shows_where_it_sits(qapp):
+    panel, _structure, _drawn = _plane_panel()
+    _type_miller(panel, 1, 1, 1)
+    panel._add_plane_btn.click()
+    _type_miller(panel, 1, 0, 0)
+    panel._add_plane_btn.click()
+    panel._plane_list.item(0).setSelected(True)
+    panel._plane_offset.set_value(0.25)
+
+    panel._plane_list.item(0).setSelected(False)
+    panel._plane_list.item(1).setSelected(True)
+    assert panel._plane_offset.value() == pytest.approx(0.0)   # the other one, untouched
+    panel._plane_list.item(1).setSelected(False)
+    panel._plane_list.item(0).setSelected(True)
+    assert panel._plane_offset.value() == pytest.approx(0.25)
+
+
+def test_a_fitted_plane_has_no_position_to_slide(qapp):
+    """It is not a member of a family, so there is no d to move it by — and the
+    slider must not try to replace a field the dataclass has not got."""
+    panel = GeometryPanel(_water())
+    panel.set_miller_cell(None)
+    panel.set_selection([0, 1, 2])
+    panel._fit_plane_btn.click()
+
+    panel._plane_list.item(0).setSelected(True)
+    assert not panel._plane_offset.isEnabled()
+    panel._plane_offset.set_value(0.4)              # must not raise
+    assert panel.lattice_planes()[0].rms == pytest.approx(0.0)

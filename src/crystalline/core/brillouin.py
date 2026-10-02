@@ -58,10 +58,15 @@ def zone_lattice(structure: Structure, setting: str = PRIMITIVE) -> Structure:
     A structure that cannot be classified is returned untouched — an
     unclassifiable lattice still has a perfectly good Wigner–Seitz cell.
     """
-    if not structure.is_periodic or is_planar(structure):
+    if not structure.is_periodic or is_planar(structure) or is_linear(structure):
         # A slab has no "primitive standard" cell in this sense: its symmetry
         # is a layer group, and running it through a 3D standardiser would
-        # rebuild it around the vacuum vector.
+        # rebuild it around the vacuum vector. A polymer is worse still: its
+        # symmetry is a rod group, and the standardiser — which only knows
+        # about 3D lattices — reads the two 500 Å directions CRYSTAL writes
+        # across a chain as lattice vectors and hands back a tetragonal cell.
+        # The zone then drawn is a needle along the wrong axis, carrying 3D
+        # labels (M, A, Z, R) the chain has no such points for.
         return structure
     if setting == CONVENTIONAL:
         from crystalline.core.cells import to_conventional

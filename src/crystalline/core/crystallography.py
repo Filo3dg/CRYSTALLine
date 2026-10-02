@@ -50,7 +50,7 @@ class CrystalInfo:
     volume: Optional[float] = None
     density: Optional[float] = None
     # Said when the cell reported is not a conventional cell of any setting of
-    # its group (the primitive cell of a centred lattice, shown as computed).
+    # its group (the primitive cell of a centred lattice, shown as it stands).
     cell_note: Optional[str] = None
 
     def rows(self) -> List[Tuple[str, str]]:
@@ -213,7 +213,7 @@ def _analyze_computed(structure, pmg, formula, n_atoms, dimensionality, symprec)
         a=lattice.a, b=lattice.b, c=lattice.c,
         alpha=lattice.alpha, beta=lattice.beta, gamma=lattice.gamma,
         volume=pmg.volume, density=float(pmg.density),
-        cell_note=None if setting is not None else "as shown — not a conventional cell",
+        cell_note=None if setting is not None else "as in the file — not a conventional cell",
     )
 
 

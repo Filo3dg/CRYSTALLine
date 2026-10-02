@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 from PySide6.QtCore import QRect, Qt, QTimer
@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTabBar,
     QTabWidget,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -294,7 +295,13 @@ class MainWindow(QMainWindow):
     # ── file tabs ───────────────────────────────────────────────────────
     def _create_tab(self, structure: Optional[Structure] = None,
                     settings=None) -> FileTab:
-        """A new tab holding ``structure`` (or nothing), its widgets built and wired.
+        """A new tab holding ``structure`` (or nothing): its state and its page.
+
+        Not its widgets. The page is an empty container the bar can show, name
+        and close; the 3D view and the panels are built by :meth:`_realise_tab`
+        the first time the tab is actually shown. A view is a VTK render window
+        and costs ~100 ms to make, so opening several files at once would spend
+        that on tabs nobody has looked at.
 
         Built *as* the current tab — the window's per-file names reach whatever
         ``self._tab`` is — and handed back without being shown; the caller adds
@@ -303,6 +310,10 @@ class MainWindow(QMainWindow):
         looking like the last one, and each goes its own way from there.
         """
         tab = FileTab()
+        tab.page = QWidget(self._file_tabs)
+        page_layout = QVBoxLayout(tab.page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        tab.start_settings = settings
         previous = self._tab
         self._tab = tab
         try:
@@ -349,73 +360,101 @@ class MainWindow(QMainWindow):
             (self.structure, _, self._unit_cell, self._bond_structure,
              self._adp_index) = self._compose_view(self._cell_view, self._supercell, None)
 
-            # The 3D view (the tab's page) and the phonon panel driving it.
-            self.viewport = Viewport(self._file_tabs)
-            if settings is not None:
-                self.viewport.renderer.set_settings(settings)
-            self.animator = PhononAnimator(self.viewport.renderer)
-            self.phonon_panel = PhononPanel(self.animator, self)
-            self.viewport.show_structure(
-                self.structure, reference_cell=self._unit_cell,
-                bond_structure=self._bond_structure,
-            )
             self.structure.add_listener(self._routed(tab, self._note_edited))
             self.structure.add_listener(self._routed(tab, self._on_structure_changed))
-
-            # The Structure panel is kept as the selection/edit model (it owns
-            # the shared selection and backs the Edit-menu tools) but is not
-            # shown — 3D picking/drag and the Edit menu drive editing instead.
-            self.structure_panel = StructurePanel(self.structure, self)
-            self.structure_panel.hide()
-
-            # Which cell the Info panel describes — the one computed, or
-            # pymatgen's standard one — is remembered between sessions, and it is
-            # also where the input builder starts.
-            from crystalline.ui import preferences
-
-            self.info_panel = InfoPanel(self)
-            self.info_panel.set_cell_choice(preferences.cell_choice())
-            self.info_panel.cell_choice_changed.connect(self._on_cell_choice_changed)
-            self.info_panel.show_structure(self._analysis_cell())
-
-            self.display_panel = DisplayPanel(
-                self.viewport.renderer.settings,
-                self._routed(tab, self._apply_render_settings), self,
-            )
-            self.display_panel.set_elements(self.structure.numbers)  # element swatches
-            self.geometry_panel = GeometryPanel(self.structure, self)
-            self.symmetry_panel = SymmetryPanel(self._analysis_cell(), self)
-            self.plot_panel = PlotPanel(self)
-            self._connect_tab_signals(tab)
-            for name, stack in self._panel_stacks.items():
-                stack.addWidget(getattr(tab, name))
         finally:
             self._tab = previous
         return tab
 
-    def _add_tab(self, structure: Optional[Structure] = None, show: bool = True) -> FileTab:
-        """Open a new tab (holding ``structure``, or empty) and switch to it.
+    def _realise_tab(self, tab: FileTab) -> None:
+        """Build ``tab``'s widgets, and put into them any file waiting to be shown.
+
+        Called the first time a tab is shown, and only then: a tab opened
+        alongside others and never looked at costs nothing but its page and the
+        file it has read. Everything is built as the current tab, the same way
+        and in the same order as when there was only ever one.
+        """
+        if not tab.built():
+            with self._acting_on(tab):
+                self._build_tab_widgets(tab)
+        pending = tab.pending
+        if pending is not None:
+            tab.pending = None
+            with self._acting_on(tab):
+                self._fill_tab(tab, *pending)
+
+    def _build_tab_widgets(self, tab: FileTab) -> None:
+        """One tab's 3D view and panels, wired to each other and to the window."""
+        # The 3D view, inside the tab's page, and the phonon panel driving it.
+        self.viewport = Viewport(tab.page)
+        tab.page.layout().addWidget(self.viewport)
+        if tab.start_settings is not None:
+            self.viewport.renderer.set_settings(tab.start_settings)
+        self.animator = PhononAnimator(self.viewport.renderer)
+        self.phonon_panel = PhononPanel(self.animator, self)
+        self.viewport.show_structure(
+            self.structure, reference_cell=self._unit_cell,
+            bond_structure=self._bond_structure,
+        )
+
+        # The Structure panel is kept as the selection/edit model (it owns
+        # the shared selection and backs the Edit-menu tools) but is not
+        # shown — 3D picking/drag and the Edit menu drive editing instead.
+        self.structure_panel = StructurePanel(self.structure, self)
+        self.structure_panel.hide()
+
+        # Which cell the Info panel describes — the one computed, or
+        # pymatgen's standard one — is remembered between sessions, and it is
+        # also where the input builder starts.
+        from crystalline.ui import preferences
+
+        self.info_panel = InfoPanel(self)
+        self.info_panel.set_cell_choice(preferences.cell_choice())
+        self.info_panel.cell_choice_changed.connect(self._on_cell_choice_changed)
+        self.info_panel.show_structure(self._analysis_cell())
+
+        self.display_panel = DisplayPanel(
+            self.viewport.renderer.settings,
+            self._routed(tab, self._apply_render_settings), self,
+        )
+        self.display_panel.set_elements(self.structure.numbers)  # element swatches
+        self.geometry_panel = GeometryPanel(self.structure, self)
+        self.symmetry_panel = SymmetryPanel(self._analysis_cell(), self)
+        self.plot_panel = PlotPanel(self)
+        self._connect_tab_signals(tab)
+        for name, stack in self._panel_stacks.items():
+            stack.addWidget(getattr(tab, name))
+        if tab.start_settings is None:
+            self._follow_theme_background()  # a fresh ground matches the theme
+
+    def _add_tab(self, structure: Optional[Structure] = None,
+                 show: bool = True) -> FileTab:
+        """Open a new tab (holding ``structure``, or empty), and switch to it.
 
         ``show=False`` sets it behind the tab on screen instead — a file read in
-        while another is being worked in. (The window's first tab is shown
-        whatever is asked: there is nothing else to show.)
+        while another is being worked in — and such a tab is never built, which
+        is what makes opening ten files at once cost one 3D view rather than
+        ten. (The window's first tab is shown whatever is asked: there is
+        nothing else to show.)
         """
-        settings = None if self._tab is None else self.viewport.renderer.settings
+        # From the tab on screen, if it has a view to take them from: one that
+        # has not been looked at yet has nothing of its own either.
+        settings = None
+        if self._tab is not None and self._tab.built():
+            settings = self.viewport.renderer.settings
         tab = self._create_tab(structure, settings)
         self._tabs.append(tab)
-        index = self._file_tabs.addTab(tab.viewport, UNTITLED)
+        index = self._file_tabs.addTab(tab.page, UNTITLED)
         self._update_tab_labels()
         if show and self._file_tabs.currentIndex() != index:
             self._file_tabs.setCurrentIndex(index)  # -> _on_file_tab_changed
         if self._tab is None or (show and self._tab is not tab):
             self._activate_tab(tab)  # the first tab: Qt made it current on adding
-        if settings is None:
-            self._follow_theme_background()  # a fresh ground matches the theme
         return tab
 
     def _tab_for_page(self, widget) -> Optional[FileTab]:
         for tab in self._tabs:
-            if tab.viewport is widget:
+            if tab.page is widget:
                 return tab
         return None
 
@@ -427,15 +466,19 @@ class MainWindow(QMainWindow):
     def _activate_tab(self, tab: FileTab) -> None:
         """Show ``tab``: its view, its panels, and the menus and status bar for it."""
         old = self._tab
-        if old is not None and old is not tab and old in self._tabs:
+        if old is not None and old is not tab and old in self._tabs and old.built():
             # A mode left playing in a tab nobody can see is work for nothing,
             # and would be found still running on the way back.
             old.phonon_panel.stop()
         self._tab = tab
-        if self._file_tabs.currentWidget() is not tab.viewport:
+        if self._file_tabs.currentWidget() is not tab.page:
             blocked = self._file_tabs.blockSignals(True)
-            self._file_tabs.setCurrentWidget(tab.viewport)
+            self._file_tabs.setCurrentWidget(tab.page)
             self._file_tabs.blockSignals(blocked)
+        # Its page is on screen; now it needs something in it. A tab opened
+        # beside others is built here, the first time it is looked at — before
+        # the panels below are reached for, since this is what makes them.
+        self._realise_tab(tab)
         for name, stack in self._panel_stacks.items():
             stack.setCurrentWidget(getattr(tab, name))
         # Editing is a mode of the window, not of a file: the tab arrived at
@@ -456,7 +499,9 @@ class MainWindow(QMainWindow):
         self._show_notice(tab)  # read in behind: what it could not read is said now
 
     def _take_tab_for_file(self) -> FileTab:
-        """The tab a file being opened goes into: this one if it is empty, else a new one."""
+        """The tab a file coming to the front goes into: this one if it is empty,
+        else a new one in front. The window opens on an empty tab, and the first
+        file takes it over rather than leaving an empty page beside its own."""
         if self._tab is not None and self._tab.is_blank():
             return self._tab
         return self._add_tab()
@@ -479,19 +524,22 @@ class MainWindow(QMainWindow):
             return
         if len(self._tabs) == 1 and tab.is_blank():
             return  # nothing to close: the window always has a tab
-        tab.phonon_panel.stop()
-        tab.plot_panel.clear()  # releases the figures, and their pick handlers
+        if tab.built():
+            tab.phonon_panel.stop()
+            tab.plot_panel.clear()  # releases the figures, and their pick handlers
         self._tabs.remove(tab)
-        index = self._file_tabs.indexOf(tab.viewport)
+        index = self._file_tabs.indexOf(tab.page)
         if index >= 0:
             self._file_tabs.removeTab(index)  # -> the neighbour becomes current
-        for name, stack in self._panel_stacks.items():
-            stack.removeWidget(getattr(tab, name))
-        try:
-            tab.viewport.interactor.close()  # releases the VTK render window
-        except Exception:  # noqa: BLE001 - it is going away either way
-            pass
-        for widget in tab.widgets():
+        if tab.built():
+            for name, stack in self._panel_stacks.items():
+                stack.removeWidget(getattr(tab, name))
+            try:
+                tab.viewport.interactor.close()  # releases the VTK render window
+            except Exception:  # noqa: BLE001 - it is going away either way
+                pass
+        tab.pending = None  # a file read for a tab nobody looked at
+        for widget in tab.widgets() + [tab.page]:
             if hasattr(widget, "deleteLater"):
                 widget.deleteLater()
         if not self._tabs:
@@ -519,7 +567,7 @@ class MainWindow(QMainWindow):
         bar = self._file_tabs.tabBar()
         for tab, label in zip(self._tabs, labels):
             tab.label = label
-            index = self._file_tabs.indexOf(tab.viewport)
+            index = self._file_tabs.indexOf(tab.page)
             if index >= 0:
                 self._file_tabs.setTabText(index, label)
                 self._file_tabs.setTabToolTip(index, tab.path or "No file open")
@@ -609,7 +657,7 @@ class MainWindow(QMainWindow):
 
         preferences.set_cell_choice(choice)
         for tab in self._tabs:
-            if tab is not self._tab:
+            if tab is not self._tab and tab.built():
                 tab.info_panel.set_cell_choice(choice)
 
     def _on_plot_dock_visibility(self, visible: bool) -> None:
@@ -966,6 +1014,8 @@ class MainWindow(QMainWindow):
         refresh_history_icons(self)
         refresh_appearance_button(self)
         for tab in getattr(self, "_tabs", []):
+            if not tab.built():
+                continue  # nothing to restyle yet; it is built in the new theme
             for panel in (tab.phonon_panel, tab.geometry_panel):
                 refresh = getattr(panel, "refresh_theme_icons", None)
                 if callable(refresh):
@@ -1183,7 +1233,12 @@ class MainWindow(QMainWindow):
                 structure = self._analysis_cell()
             except Exception:  # noqa: BLE001 - naming the corners is a nicety
                 structure = None
-        folder = str(Path(self._output_path).parent) if self._output_path else ""
+        # Beside the file this tab was opened from, whatever kind it is. Taking
+        # it from the *output* path left a geometry (.cif, .gui, fort.34) with
+        # nowhere to look — the dialog opened on no folder and offered nothing,
+        # with the grids sitting next to the very file on screen.
+        opened = self._output_path or (self._tab.path if self._tab is not None else None)
+        folder = str(Path(opened).parent) if opened else ""
         # The run's own files are told apart by the Fermi level they record,
         # not by being named after the output.
         try:
@@ -1549,12 +1604,17 @@ class MainWindow(QMainWindow):
         ``done`` receives the result back on the UI thread, which is where any
         drawing has to happen: VTK and Qt widgets belong to the thread that made
         them, so only the computation moves.
+
+        It receives it for the tab the work was started in, whichever tab is on
+        screen by then (:meth:`_routed`). The tab bar is disabled meanwhile, but
+        that only stops the *user* moving: a file read in behind the work brings
+        its own tab to the front when it is ready, and without this the orbital
+        or the plot would be drawn into that newly opened file instead.
         """
         self._busy.start(message)
+        started_in = self._tab
         worker = Worker(work)
         self._workers.append(worker)  # held: a dropped worker takes its thread down
-        # The result goes to the widgets of the tab on screen now: that tab has
-        # to still be the one on screen when it arrives.
         self._file_tabs.tabBar().setEnabled(False)
 
         def cleanup() -> None:
@@ -1568,7 +1628,8 @@ class MainWindow(QMainWindow):
             cleanup()
             QMessageBox.critical(self, failed_title, str(exc))
 
-        worker.finished.connect(lambda result: (cleanup(), done(result)))
+        deliver = self._routed(started_in, done)
+        worker.finished.connect(lambda result: (cleanup(), deliver(result)))
         worker.failed.connect(on_failed)
         worker.start()
 
@@ -1659,7 +1720,12 @@ class MainWindow(QMainWindow):
         from crystalline.crystalio import density
         from crystalline.ui.panels.density_dialog import DensityDialog
 
-        folder = str(Path(self._output_path).parent) if self._output_path else ""
+        # Beside the file this tab was opened from, whatever kind it is. Taking
+        # it from the *output* path left a geometry (.cif, .gui, fort.34) with
+        # nowhere to look — the dialog opened on no folder and offered nothing,
+        # with the grids sitting next to the very file on screen.
+        opened = self._output_path or (self._tab.path if self._tab is not None else None)
+        folder = str(Path(opened).parent) if opened else ""
         miller_cell = self._conventional_cell()
         source = getattr(self, "_source", None)
         cell = (np.asarray(source.cell, dtype=float)
@@ -1738,7 +1804,27 @@ class MainWindow(QMainWindow):
         self._update_density_actions()
 
     def _update_density_actions(self) -> None:
-        """Enable the Clear entry only while something is drawn."""
+        """Enable the field entry once the tab holds a file, Clear while one is drawn.
+
+        The grids sit beside the file the tab was opened from, so without one
+        there is nowhere to look: the dialog opened on no folder and listed
+        nothing. That was only reachable while the window was reading — which it
+        now does in the background, leaving every menu live over a tab whose
+        file has not arrived yet, where opening a file used to hold the whole
+        window still. Every other entry that needs the file is already enabled
+        from what was read; this one is enabled by there being a file at all,
+        so a geometry (.cif, .gui) keeps it and its Browse button.
+        """
+        tab = self._tab
+        field = getattr(self, "_density_action", None)
+        if field is not None:
+            ready = tab is not None and bool(tab.path)
+            field.setEnabled(ready)
+            field.setToolTip(
+                "Draw a charge density, a spin density or an electrostatic potential "
+                "from a PROPERTIES run with ECH3 or POT3" if ready else
+                "Open a file first: the grids are looked for beside it"
+            )
         clear = getattr(self, "_clear_density_action", None)
         if clear is not None:
             clear.setEnabled(bool(getattr(self, "_density_shown", False)))
@@ -2441,12 +2527,8 @@ class MainWindow(QMainWindow):
         into the structure on screen, and only the first of them — see
         :func:`~crystalline.ui.file_tabs.openable`.
         """
-        if to_open:
-            for index, path in enumerate(to_open):
-                # read in the background, in this order; the first to the front
-                self._load_path(path, front=index == 0)
-            done = to_open
-        else:
+        done = self._load_paths(to_open)
+        if not to_open:
             done = [path for path in to_import if self._import_path(path)]
         if done and ignored:
             # Said rather than silently dropped: a multiple selection dragged in
@@ -2490,15 +2572,22 @@ class MainWindow(QMainWindow):
             "Structure files (*.out *.gui *.f34 *.cif);;CRYSTAL files (*.out *.gui *.f34);;"
             "CIF files (*.cif);;All files (*)",
         )
-        for index, path in enumerate(paths):
-            # The first comes to the front, to be worked in while the rest are
-            # read and set behind it.
-            self._load_path(path, front=index == 0)
+        self._load_paths(paths)
 
     def _open_folder(self) -> str:
         """Where the Open dialog starts: beside the file on screen, if there is one."""
         path = self._tab.path if self._tab is not None else None
         return os.path.dirname(path) if path else ""
+
+    def _load_paths(self, paths: Sequence[str]) -> list:
+        """Open each of ``paths`` in a tab of its own, the first to the front.
+
+        The rest are read behind it, in order, so the file the user asked for
+        first is the one they land in rather than the last to finish reading.
+        """
+        for index, path in enumerate(paths):
+            self._load_path(path, front=index == 0)
+        return list(paths)
 
     def _load_path(self, path: str, front: bool = True) -> None:
         """Open ``path`` in a tab of its own, reading it off the main thread.
@@ -2513,7 +2602,8 @@ class MainWindow(QMainWindow):
         ``front`` is whether the file's tab comes to the front when it is ready.
         Of several opened at once only the first does, so that it can be worked
         in while the rest are read and set behind it, one by one, without
-        taking the screen from it.
+        taking the screen from it, and a tab set behind this way is not built
+        until it is looked at (:meth:`_realise_tab`).
 
         Split out of :meth:`_open_file` so a file arriving any other way — dropped
         on the window — goes through exactly the same sequence (see
@@ -2577,10 +2667,12 @@ class MainWindow(QMainWindow):
 
         In front — the tab on screen, if that one is empty (the window opens on
         an empty tab, and the first file takes it over), else a new tab brought
-        to the front — or, when not ``front``, in a new tab set behind the one
-        being worked in. That one is built the same way, with the window acting
-        on it (:meth:`_acting_on`), and the menus are then set back to the tab on
-        screen.
+        to the front — or, when not ``front``, in a tab set behind the one being
+        worked in, where it waits: that tab is named and holds its file, and
+        nothing is built or drawn for it until it is looked at
+        (:meth:`_realise_tab`). Putting a file into widgets is the part that
+        has to happen on this thread, and doing it for a tab nobody has turned
+        to yet is the one cost reading in the background does not remove.
         """
         if front or self._tab.is_blank():
             tab = self._take_tab_for_file()
@@ -2588,9 +2680,9 @@ class MainWindow(QMainWindow):
             self._show_notice(tab)
             return
         tab = self._add_tab(show=False)
-        with self._acting_on(tab):
-            self._fill_tab(tab, path, read)
-        self._refresh_chrome()  # the menus are the tab on screen's, again
+        tab.path = path
+        tab.pending = (path, read)
+        self._update_tab_labels()
 
     def _show_notice(self, tab: FileTab) -> None:
         """Say what opening ``tab``'s file had to leave out — once, when it is seen.
@@ -2651,6 +2743,7 @@ class MainWindow(QMainWindow):
         self._update_adp_controls(autoshow=True)
         self._update_info(read.output_props)
         self._update_plot_actions()  # enable only the plots this file supports
+        self._update_density_actions()  # the grids are looked for beside this file
         self._update_orbital_actions()  # and the orbitals, if the run wrote any
         self._update_spectra_action()
         self._update_vci_action()
@@ -2715,8 +2808,8 @@ class MainWindow(QMainWindow):
         ``output_props`` are the rows the CRYSTAL output gives about its own run
         (read by :func:`_read_file`). The crystallography is described on the
         cell on screen, folded to one cell — not on the file's primitive cell —
-        so that "as computed" means the cell the 3D view draws, and so that the
-        panel says the same thing before an edit as after one.
+        so that "as in the file" means the cell the 3D view draws, and so that
+        the panel says the same thing before an edit as after one.
         """
         self._output_props = output_props or {}
         self.info_panel.show_structure(self._analysis_cell(), self._output_props)

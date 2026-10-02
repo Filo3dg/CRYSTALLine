@@ -202,6 +202,7 @@ class _Tab:
         self.name, self.blank = name, blank
         self.path = None
         self.notice = None
+        self.pending = None
 
     def is_blank(self):
         return self.blank
@@ -228,7 +229,11 @@ def _router(blank_on_screen=False):
 
         def _add_tab(self, show=True):
             self.calls.append(("add", show))
-            return _Tab("new, behind")
+            self.placed = _Tab("new, behind")
+            return self.placed
+
+        def _update_tab_labels(self):
+            self.calls.append(("labels",))
 
         def _fill_tab(self, tab, path, read):
             # filled while the window acts on it — whichever tab is on screen
@@ -260,14 +265,15 @@ def test_the_first_file_comes_to_the_front_and_says_what_it_left_out(qapp, warni
 
 
 def test_the_others_are_set_behind_without_taking_the_screen(qapp, warnings_said):
-    """Built with the window acting on the new tab, then the menus are the
-    worked-in tab's again — and nothing pops up over the work."""
+    """A tab set behind the one being worked in holds its file and waits: it is
+    not filled, and nothing is built or drawn for it, until it is looked at —
+    see test_file_tabs.py for the realising. Nothing pops up over the work."""
     window = _router()
     window._show_read_file("/runs/b.out", "modes could not be read", front=False)
 
-    assert window.calls == [("add", False),
-                            ("fill", "new, behind", "new, behind"),
-                            ("menus for", "on screen")]
+    assert window.calls == [("add", False), ("labels",)]     # added and named, not filled
+    assert window.placed.path == "/runs/b.out"
+    assert window.placed.pending == ("/runs/b.out", "modes could not be read")
     assert window._tab is window.on_screen                   # still the one worked in
     assert warnings_said == []                               # said when it is looked at
 

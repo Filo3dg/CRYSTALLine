@@ -12,7 +12,7 @@ becomes the drop target it is describing.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -55,6 +55,26 @@ class DropHint(ParentOverlay):
         # advertising, which reads as the drop silently failing.
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setAcceptDrops(False)
+
+    def _fit(self) -> None:
+        """Cover the view, not the tabs above it.
+
+        The hint hangs on the tab widget, so the plain overlay rectangle — the
+        whole parent — reached up over the tab bar and hid which file was open
+        at the moment the pointer was over the window. The page's own geometry
+        is the area a drop actually lands in.
+        """
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        page = parent.currentWidget() if hasattr(parent, "currentWidget") else None
+        if page is None:
+            self.setGeometry(parent.rect())
+            return
+        # Mapped, not taken as it stands: a tab widget keeps its pages inside a
+        # stack of its own, so a page's geometry is given in that stack's
+        # coordinates and reads as starting at the top of the window.
+        self.setGeometry(QRect(page.mapTo(parent, QPoint(0, 0)), page.size()))
 
     def show_hint(self, title: str, detail: str = "") -> None:
         """Put the panel up, naming what the drop would do."""

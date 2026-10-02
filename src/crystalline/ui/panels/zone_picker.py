@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
+from functools import lru_cache
+
 import numpy as np
 from PySide6.QtCore import QEvent
 from PySide6.QtGui import QColor
@@ -38,6 +40,8 @@ from crystalline.core.brillouin import (
     PRIMITIVE,
     brillouin_zone,
     display_label,
+    is_linear,
+    is_planar,
     reciprocal_cell,
     special_points,
     zone_lattice,
@@ -45,6 +49,8 @@ from crystalline.core.brillouin import (
 from crystalline.core.structure import Structure
 from crystalline.ui import menus, theme, wheel_zoom
 from crystalline.ui.safety import guard
+from vtkmodules.vtkCommonCore import VTK_FONT_FILE
+
 from crystalline.viz.fonts import unicode_font
 
 # Special points are halves, thirds, quarters, sixths and eighths, and every
@@ -60,6 +66,24 @@ _VULGAR = {
 # the marker is the same visual size whatever the lattice parameters are.
 _POINT_RADIUS = 0.024
 _PATH_WIDTH = 5
+
+# A subscript, where it has to be drawn as its own actor: how much smaller than
+# the base, how far below it (a fraction of the base's font size, scaled by the
+# screen's DPI like the glyphs themselves, so it looks the same on a HiDPI
+# display and an ordinary one), and a floor so it stays legible.
+_SUBSCRIPT_SCALE = 0.7
+_SUBSCRIPT_DROP = 0.15
+_SUBSCRIPT_GAP = 0.08
+_SUBSCRIPT_MIN_SIZE = 8
+
+# The digits Unicode does have, which need no actor of their own.
+_SUBSCRIPT_DIGITS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+
+# A polymer's zone is drawn as a bar rather than a hairline, and its one axis
+# is given room to emerge past the zone edge instead of ending on the point
+# marked there — both only apply to the segment case.
+_ZONE_BAR_WIDTH = 6
+_CHAIN_AXIS_REACH = 1.6
 
 # A label sits just clear of its own marker, as a multiple of the marker's
 # radius — both are world lengths, so the gap on screen is the same at every
@@ -97,6 +121,9 @@ _GAP = 0.035
 # Labels pymatgen and ASE spell out, which MathText sets as the letter itself.
 _GREEK = {"G": r"\Gamma", "Gamma": r"\Gamma", "Sigma": r"\Sigma",
           "Delta": r"\Delta", "Lambda": r"\Lambda"}
+# The same letters for the plain-text path, where VTK draws the glyph itself.
+_PLAIN_GREEK = {"Gamma": "\u0393", "Sigma": "\u03a3", "Delta": "\u0394",
+                "Lambda": "\u039b"}
 
 # The markers, and the one the side panel is pointing at.
 _POINT_COLOUR = "#d6453c"
@@ -125,6 +152,7 @@ class ZonePickerDialog(QDialog):
         self._path_actors: list = []
         self._legend_names: list = []
         self._flat_normal = None
+        self._chain = None     # unit vector along a polymer's zone, else None
         self._extent = 1.0
 
         self._resolve_lattice()
@@ -164,6 +192,16 @@ class ZonePickerDialog(QDialog):
                 "A band path is written in the primitive reciprocal basis, which "
                 "is what CRYSTAL reads — so a path is always picked on the "
                 "primitive zone. Cell ▸ Brillouin zone can show either."
+            )
+        elif not _is_crystal(self._structure):
+            # A slab's symmetry is a layer group and a chain's a rod group;
+            # neither has a 3D Bravais lattice to offer a second cell of, and
+            # zone_lattice hands both back untouched. The box would be a choice
+            # between a picture and itself.
+            self._setting_box.setEnabled(False)
+            self._setting_box.setToolTip(
+                "Only a 3D crystal has two cells to choose between. A slab or a "
+                "polymer is drawn in the cell it was computed in."
             )
         chooser.addStretch(1)
         outer.addLayout(chooser)
@@ -294,6 +332,14 @@ class ZonePickerDialog(QDialog):
         )
         self._guides.setChecked(True)
         self._guides.toggled.connect(lambda _on: self._draw_and_sync())
+        if is_linear(self._structure):
+            # Every line from Γ on a segment runs along the segment. A tick box
+            # that cannot change the picture is worse than one that is not there.
+            self._guides.setEnabled(False)
+            self._guides.setToolTip(
+                "A polymer's zone is a line, and the symmetry line Γ→X is that "
+                "line — there is nothing to draw inside it."
+            )
         bar.addWidget(self._guides)
 
         stretch = QWidget(bar)
@@ -357,13 +403,24 @@ class ZonePickerDialog(QDialog):
             return
         self._extent = float(np.linalg.norm(vertices, axis=1).max()) or 1.0
         self._flat_normal = _plane_normal(vertices) if len(faces) == 1 else None
+        # A polymer's zone is a segment: the one direction it disperses in.
+        # Kept because almost everything below is drawn differently for it —
+        # a line has no inside to shade, no faces to give it shape, and two
+        # directions around it that mean nothing.
+        self._chain = _segment_direction(vertices)
 
         import pyvista as pv
 
         for face in faces:
             loop = list(face) + [face[0]]
+            # The zone is the subject. On a solid or a polygon the edges are
+            # the outline of something already shaded; a segment is the whole
+            # of it, so it is drawn as a bar rather than as a hairline that
+            # the axes out of Γ would then outweigh.
             plotter.add_mesh(pv.lines_from_points(vertices[loop]),
-                             color="#7f8c9b", line_width=2, pickable=False)
+                             color="#7f8c9b" if self._chain is None else "#5b8dee",
+                             line_width=2 if self._chain is None else _ZONE_BAR_WIDTH,
+                             pickable=False)
         # A translucent body gives the zone its shape; the wireframe alone
         # reads as a tangle from most angles. A slab's zone is a *polygon* —
         # flat — and asking a 3D triangulation for the solid inside it returns
@@ -389,10 +446,11 @@ class ZonePickerDialog(QDialog):
             # a newline rather than two labels: the second line has to sit
             # under the first on *screen*, and two world-anchored labels would
             # only line up from one direction.
-            anchor = centre + _outward(centre) * radius * _LABEL_OFFSET
-            _billboard(plotter, anchor, _math_label(label),
-                       self._label_colour(), 15)
-        if self._guides.isChecked():
+            anchor = centre + self._label_direction(centre) * radius * _LABEL_OFFSET
+            _draw_label(plotter, anchor, label, self._label_colour(), 15)
+        # On a segment every "symmetry line" from Γ runs along the zone itself,
+        # so the dashes would be drawn on top of the bar and say nothing.
+        if self._guides.isChecked() and self._chain is None:
             self._draw_guides(plotter)
         self._draw_axes(plotter)
         # pyvista refuses to enable a picker that is already enabled, so the
@@ -402,6 +460,10 @@ class ZonePickerDialog(QDialog):
         plotter.enable_mesh_picking(callback=self._on_pick, show=False,
                                     show_message=False, left_clicking=True)
         if keep_camera is None:
+            if self._chain is not None:
+                self._view_across_the_chain()
+            elif self._flat_normal is not None:
+                self._view_face_on()
             self._centre_on_gamma()
         else:
             plotter.camera_position = keep_camera
@@ -429,6 +491,52 @@ class ZonePickerDialog(QDialog):
         camera.SetPosition(*(np.asarray(camera.GetPosition(), dtype=float) - offset))
         plotter.renderer.ResetCameraClippingRange()
 
+    def _label_direction(self, centre: np.ndarray) -> np.ndarray:
+        """Which way a point's label is nudged, clear of what it names.
+
+        Outward from Γ, with the two cases where outward is no use. On a
+        segment it is along the bar, where the axis arrow and the next label
+        already are. And Γ, which has no outward of its own, is given one
+        pointing at the camera — invisible on a flat zone, which is now looked
+        at square on, so there its label goes up the plane instead.
+        """
+        if self._chain is not None:
+            return _perpendicular_to(self._chain)
+        direction = _outward(centre)
+        if self._flat_normal is not None and abs(
+                float(np.dot(direction, self._flat_normal))) > 0.9:
+            # Up and to the left: the two axes drawn out of Γ are the positive
+            # halves of the in-plane ones, so straight up lands on one of them.
+            up = _upright_in(self._flat_normal)
+            away = up - np.cross(up, self._flat_normal)
+            return away / float(np.linalg.norm(away))
+        return direction
+
+    def _view_across_the_chain(self) -> None:
+        """Look at a segment side-on, with the chain across the view.
+
+        The default isometric view is for a solid. A line seen from a corner is
+        a foreshortened line — and seen down its own axis, a dot.
+        """
+        plotter = self._view.plotter
+        up = _perpendicular_to(self._chain)
+        eye = np.cross(self._chain, up)
+        plotter.camera_position = [tuple(eye * self._extent * 4),
+                                   (0.0, 0.0, 0.0), tuple(up)]
+
+    def _view_face_on(self) -> None:
+        """Look square at a flat zone, the way every zone diagram prints one.
+
+        A slab's zone is a polygon, and the default isometric view shows it as
+        a sheared version of itself — the angles between Γ–M and Γ–K are not the
+        angles on screen, which is the one thing the picture is for. Seen down
+        its normal, the polygon has its true shape.
+        """
+        plotter = self._view.plotter
+        normal = _facing(self._flat_normal)
+        plotter.camera_position = [tuple(normal * self._extent * 4),
+                                   (0.0, 0.0, 0.0), tuple(_upright_in(normal))]
+
     def _draw_guides(self, plotter) -> None:
         """Γ to every special point, dashed.
 
@@ -451,20 +559,35 @@ class ZonePickerDialog(QDialog):
         # Each axis in its chip's colour, so the button and the arrow it aims
         # down are plainly the same thing — the structure window's a/b/c chips
         # match its lattice gizmo the same way.
+        # Through _draw_label like every other label here, which is also what
+        # gives them their subscripts. Spelt out as MathText literals, these
+        # stayed dollar-signed on a machine whose MathText does not work, long
+        # after the k-points had stopped being.
         for index, (direction, name, colour) in enumerate((
-            (np.array([1.0, 0, 0]), r"$k_x$", theme.AXIS_COLOURS[0]),
-            (np.array([0, 1.0, 0]), r"$k_y$", theme.AXIS_COLOURS[1]),
-            (np.array([0, 0, 1.0]), r"$k_z$", theme.AXIS_COLOURS[2]),
+            (np.array([1.0, 0, 0]), "k_x", theme.AXIS_COLOURS[0]),
+            (np.array([0, 1.0, 0]), "k_y", theme.AXIS_COLOURS[1]),
+            (np.array([0, 0, 1.0]), "k_z", theme.AXIS_COLOURS[2]),
         )):
             # A slab disperses in its plane and nowhere else. Drawing the axis
             # across it would promise a direction the bands do not have.
             if self._flat_normal is not None and abs(
                     float(np.dot(direction, self._flat_normal))) > 0.9:
                 continue
+            # The same rule one dimension down: a polymer disperses along the
+            # chain alone, so an axis square to it is dropped. The one left runs
+            # *along* the zone, which is the truth about a polymer — the bar is
+            # the axis — so it is drawn on from the zone's edge outwards rather
+            # than along the bar, which would paint half of it the axis colour.
+            start = np.zeros(3)
+            if self._chain is not None:
+                if abs(float(np.dot(direction, self._chain))) < 0.1:
+                    continue
+                start = direction * self._extent
+                reach = self._extent * _CHAIN_AXIS_REACH
             import pyvista as pv
 
             tip = direction * reach
-            plotter.add_mesh(pv.lines_from_points(np.array([np.zeros(3), tip])),
+            plotter.add_mesh(pv.lines_from_points(np.array([start, tip])),
                              color=colour, line_width=2, pickable=False)
             # A head, so the line reads as an axis rather than as another edge.
             head = self._extent * 0.06
@@ -472,7 +595,7 @@ class ZonePickerDialog(QDialog):
                                      direction=direction, height=head,
                                      radius=head * 0.32, resolution=16),
                              color=colour, pickable=False)
-            _billboard(plotter, tip * 1.04, name, colour, 14)
+            _draw_label(plotter, tip * 1.04, name, colour, 14)
 
     def _label_colour(self) -> str:
         """Text that reads against both the marker and the viewport's ground.
@@ -741,20 +864,46 @@ class ZonePickerDialog(QDialog):
 def _math_label(label: str) -> str:
     """A k-point label as VTK will actually draw it.
 
-    VTK's built-in font has no Greek, so a bare "Γ" renders as *nothing at all*
-    — the point looked unlabelled. Its MathText backend (matplotlib, registered
-    by importing vtkRenderingMatplotlib) does have Greek, and italicises the
-    letter the way a band diagram sets it, so labels go through that instead.
-    Anything MathText might choke on falls back to plain text, which is worse
-    looking but never blank.
+    Plain Unicode in a font that has Greek, never MathText. VTK can rasterise
+    ``$\\Gamma$`` through matplotlib, and where that works it sets the letter
+    italic as a band diagram does — but where it does not, the label is drawn
+    verbatim, dollar signs and backslash and all, and no probe from this side
+    predicts which machine is which. A label that is always right is worth more
+    than one that is occasionally prettier: the subscript of ``k_x`` is dropped
+    and the letter stands upright, and it renders everywhere.
     """
-    name = str(label)
-    greek = _GREEK.get(name.split("_")[0])
-    if greek:
-        name = greek + name[len(name.split("_")[0]):]
-    elif not name.replace("_", "").isalnum():
-        return display_label(label)
-    return f"${name}$"
+    return _plain_label(label)
+
+
+def _plain_label(label: str) -> str:
+    """The same label without MathText, as one string: ``Σ_1`` -> ``Σ₁``.
+
+    Drawn in :func:`~crystalline.viz.fonts.unicode_font`, which has the Greek
+    that VTK's own font lacks. What :func:`_label_parts` could not fold into a
+    single string is simply run together here; the scene draws the two pieces
+    separately (see :func:`_draw_label`).
+    """
+    return "".join(_label_parts(label))
+
+
+def _label_parts(label: str) -> Tuple[str, str]:
+    """``(base, subscript)``: a k-label split where it has to be drawn in two.
+
+    A digit subscript is folded into the base, because Unicode has ₀–₉ and the
+    label font draws them: ``Σ_1`` is one string, ``Σ₁``. A *letter* subscript
+    has no such glyph — there is a ₓ and no ᵧ or ᵶ — so it comes back on its
+    own, to be drawn smaller and lower beside the base. That is k_x, k_y and
+    k_z, which are the axes of the zone and were reading as ``kx``.
+    """
+    name = str(display_label(label))
+    for plain, letter in _PLAIN_GREEK.items():
+        if name.startswith(plain):
+            name = letter + name[len(plain):]
+            break
+    base, _, subscript = name.partition("_")
+    if subscript.isdigit():
+        return base + subscript.translate(_SUBSCRIPT_DIGITS), ""
+    return base, subscript
 
 
 def _tidy_number(value: float) -> str:
@@ -805,7 +954,70 @@ def _dashed_line(start, end, extent: float):
     return pv.PolyData(np.asarray(points), lines=np.asarray(lines))
 
 
-def _billboard(plotter, position, text: str, colour: str, size: int):
+def _draw_label(plotter, position, label: str, colour: str, size: int):
+    """Draw ``label`` at ``position``, with a letter subscript as a real one.
+
+    Two actors at the same point rather than one string: VTK sets a text actor
+    in a single size, and neither it nor the font has any notion of a subscript.
+    The second is placed with ``SetDisplayOffset``, which is in *pixels applied
+    after projection* — so the subscript keeps its place beside the base at
+    every zoom and from every angle, which a second world-anchored label would
+    not (both actors are drawn at a constant size on screen, so a world-space
+    gap between them would open and close as the view moved).
+    """
+    base, subscript = _label_parts(label)
+    actor = _billboard(plotter, position, base, colour, size)
+    if subscript:
+        dpi = _dpi_of(plotter)
+        small = max(_SUBSCRIPT_MIN_SIZE, int(round(size * _SUBSCRIPT_SCALE)))
+        _billboard(plotter, position, subscript, colour, small,
+                   offset=(_text_width(base, size, dpi)
+                           + int(round(size * _SUBSCRIPT_GAP * dpi / 72.0)),
+                           -int(round(size * _SUBSCRIPT_DROP * dpi / 72.0))))
+    return actor
+
+
+def _dpi_of(plotter) -> int:
+    """The render window's DPI, which is what its text actors are drawn at.
+
+    Asked of the window rather than assumed, so the width measured below is
+    measured for the same rendering that is about to happen.
+    """
+    window = getattr(plotter, "ren_win", None) or getattr(plotter, "render_window", None)
+    try:
+        return int(window.GetDPI())
+    except Exception:  # noqa: BLE001 - a plotter with no window yet
+        return 72
+
+
+def _text_width(text: str, size: int, dpi: int) -> int:
+    """How wide ``text`` is drawn, in pixels — where the subscript begins.
+
+    Measured with the same font and size VTK will draw it at, through VTK's own
+    text renderer. Guessing from the character count puts the subscript inside
+    the letter or out in space, differently for every label.
+    """
+    if not text:
+        return 0
+    import vtk
+
+    prop = vtk.vtkTextProperty()
+    prop.SetFontSize(size)
+    font = unicode_font()
+    if font is not None:
+        prop.SetFontFamily(VTK_FONT_FILE)
+        prop.SetFontFile(font)
+    box = [0, 0, 0, 0]
+    try:
+        if vtk.vtkTextRenderer.GetInstance().GetBoundingBox(prop, text, box, dpi):
+            return int(box[1] - box[0]) + 1
+    except Exception:  # noqa: BLE001 - no text renderer: fall back to an estimate
+        pass
+    return int(round(size * 0.6 * len(text)))
+
+
+def _billboard(plotter, position, text: str, colour: str, size: int,
+               offset=(0, 0)):
     """A label anchored in the scene, drawn as its own actor.
 
     Not ``add_point_labels``: that builds a ``vtkLabelPlacementMapper``, which
@@ -821,8 +1033,16 @@ def _billboard(plotter, position, text: str, colour: str, size: int):
     actor = vtk.vtkBillboardTextActor3D()
     actor.SetInput(text)
     actor.SetPosition(*[float(v) for v in position])
+    actor.SetDisplayOffset(int(offset[0]), int(offset[1]))
     prop = actor.GetTextProperty()
     prop.SetFontSize(size)
+    # VTK's built-in font draws a Greek letter as nothing at all, so the plain
+    # text these labels fall back to needs a font that has one. MathText, when
+    # it is working, uses matplotlib's own fonts and ignores this.
+    font = unicode_font()
+    if font is not None:
+        prop.SetFontFamily(VTK_FONT_FILE)
+        prop.SetFontFile(font)
     prop.SetColor(*Color(colour).float_rgb)
     prop.SetJustificationToLeft()
     prop.SetVerticalJustificationToCentered()
@@ -836,6 +1056,32 @@ def _spacer(width: int) -> QWidget:
     widget.setFixedWidth(width)
     return widget
 
+
+
+@lru_cache(maxsize=1)
+def mathtext_works() -> bool:
+    """Whether VTK will actually draw ``$\\Gamma$`` as a gamma on this machine.
+
+    ``_enable_mathtext`` registers the backend, but registering it is not the
+    same as it working: where matplotlib and VTK disagree about their internals,
+    the dispatcher still routes the string to MathText and the raster comes back
+    empty — or the string is drawn verbatim, dollar signs and all, which is what
+    a user sees. Asking VTK to rasterise one glyph answers it for certain, once.
+    """
+    try:
+        from vtkmodules.vtkCommonDataModel import vtkImageData
+        from vtkmodules.vtkRenderingCore import vtkTextProperty, vtkTextRenderer
+
+        renderer = vtkTextRenderer.GetInstance()
+        if renderer is None or renderer.DetectBackend(r"$\Gamma$") != 2:  # 2 = MathText
+            return False
+        image = vtkImageData()
+        if not renderer.RenderString(vtkTextProperty(), r"$\Gamma$", image, [0, 0], 72):
+            return False
+        width, height, _ = image.GetDimensions()
+        return width > 1 and height > 1
+    except Exception:  # noqa: BLE001 - any doubt at all means use plain text
+        return False
 
 
 def _enable_mathtext() -> None:
@@ -868,6 +1114,72 @@ def _plane_normal(vertices: np.ndarray):
     if length < 1e-12:
         return None
     return normal / length
+
+
+def _is_crystal(structure: Structure) -> bool:
+    """Whether this is a 3D crystal — the only case with a cell to choose."""
+    return not (is_linear(structure) or is_planar(structure)) and bool(structure.is_periodic)
+
+
+def _segment_direction(vertices: np.ndarray):
+    """The unit vector along a two-point zone, or ``None`` if it is not one."""
+    if len(vertices) != 2:
+        return None
+    along = np.asarray(vertices[1], dtype=float) - np.asarray(vertices[0], dtype=float)
+    length = float(np.linalg.norm(along))
+    if length < 1e-12:
+        return None
+    return along / length
+
+
+def _facing(normal: np.ndarray) -> np.ndarray:
+    """A plane's normal, turned to point towards the viewer rather than away.
+
+    Which way ``_plane_normal`` points falls out of the order the zone's
+    corners happen to be wound in, so without this the same slab could open
+    seen from above or from below between one lattice and the next. Towards
+    +z where the plane allows it, else +y, else +x.
+    """
+    normal = np.asarray(normal, dtype=float)
+    for axis in (np.array([0.0, 0, 1.0]), np.array([0, 1.0, 0]), np.array([1.0, 0, 0])):
+        along = float(np.dot(normal, axis))
+        if abs(along) > 1e-6:
+            return normal if along > 0 else -normal
+    return normal
+
+
+def _upright_in(normal: np.ndarray) -> np.ndarray:
+    """Which way is up for a plane seen face-on.
+
+    The cartesian axis that lies most nearly *in* the plane, preferring z and
+    then y — so a slab in the xy plane comes up the familiar way round, k_y up
+    and k_x to the right, rather than on its side.
+    """
+    normal = np.asarray(normal, dtype=float)
+    best, best_length = None, 0.0
+    for axis in (np.array([0.0, 0, 1.0]), np.array([0, 1.0, 0]), np.array([1.0, 0, 0])):
+        inside = axis - normal * float(np.dot(axis, normal))
+        length = float(np.linalg.norm(inside))
+        if length > best_length + 1e-6:          # a later axis must be clearly better
+            best, best_length = inside, length
+    if best is None or best_length < 1e-9:
+        return _perpendicular_to(normal)
+    return best / best_length
+
+
+def _perpendicular_to(direction: np.ndarray) -> np.ndarray:
+    """Some unit vector square to ``direction`` — "up", for a zone with no up.
+
+    Built from whichever cartesian axis is least like it, so the choice is
+    stable for a chain along any direction rather than degenerating when the
+    chain happens to lie along the one picked.
+    """
+    direction = np.asarray(direction, dtype=float)
+    axis = np.zeros(3)
+    axis[int(np.argmin(np.abs(direction)))] = 1.0
+    out = np.cross(direction, np.cross(axis, direction))
+    length = float(np.linalg.norm(out))
+    return out / length if length > 1e-12 else axis
 
 
 def _outward(point: np.ndarray) -> np.ndarray:

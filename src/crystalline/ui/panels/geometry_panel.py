@@ -171,7 +171,11 @@ class GeometryPanel(QWidget):
     # ── sections ────────────────────────────────────────────────────────
     @staticmethod
     def _remembered_open(key: str) -> bool:
-        return preferences.section_open(f"geometry/{key}")
+        # Folded until asked for. Three sections of tools open at once fills the
+        # dock and buries whichever one is being used; a panel that opens as a
+        # list of headings shows what is on offer and costs one click to use.
+        # Whatever is left open is remembered, so this is only the first run.
+        return preferences.section_open(f"geometry/{key}", default=False)
 
     def _remember_section(self, key: str, open_: bool) -> None:
         if not self._restoring_sections:
@@ -261,65 +265,57 @@ class GeometryPanel(QWidget):
         box = QVBoxLayout(group)
         box.setContentsMargins(0, 0, 0, 0)
 
-        # Which cell the indices are in: the one thing that decides what (001)
-        # means, so it is said rather than left to be guessed.
-        self._plane_hint = QLabel()
-        self._plane_hint.setWordWrap(True)
-        self._plane_hint.setToolTip(
-            "Miller indices are quoted in the conventional cell — as for the density "
-            "slice — whatever cell, primitive view or supercell is on screen"
-        )
-        self._plane_hint.setStyleSheet("color: palette(mid);")
-        box.addWidget(self._plane_hint)
+        # Two ways to a plane, in order, each under its own heading: name it by
+        # its indices, or fit one to atoms. They were run together, and the fit
+        # read as a third button belonging to the indices above it.
+        box.addWidget(_heading("By Miller indices"))
 
-        row = QHBoxLayout()
-        # The same boxes the density slice asks for a plane with.
+        # The same boxes the density slice asks for a plane with. The cell they
+        # are quoted in is the conventional one, as it is there — said in the
+        # tooltip rather than in a line of its own above every other control.
         self._miller = MillerIndices((1, 0, 0))
+        self._miller.setToolTip(
+            "Quoted in the conventional cell, whatever cell, primitive view or "
+            "supercell is on screen — as for the density slice"
+        )
         self._miller.changed.connect(self._sync_plane_form)
         self._miller_boxes = self._miller.boxes
         self._i_label = self._miller.i_label
-        row.addWidget(self._miller, 1)
-        self._spacing_label = QLabel()
-        self._spacing_label.setToolTip("Distance between neighbouring planes of the family")
-        row.addWidget(self._spacing_label)
-        box.addLayout(row)
+        box.addWidget(self._miller)
 
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Position"))
-        self._plane_offset = QDoubleSpinBox()
-        self._plane_offset.setRange(-_PLANE_OFFSET_RANGE, _PLANE_OFFSET_RANGE)
-        self._plane_offset.setDecimals(3)
-        self._plane_offset.setSingleStep(_PLANE_OFFSET_STEP)
-        self._plane_offset.setSuffix(" d")
-        self._plane_offset.setToolTip(
-            "Along the normal, in units of d(hkl) from the plane through the origin: "
-            "0 and 1 are neighbouring planes of the family, 0.5 lies halfway between"
-        )
-        self._plane_offset.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self._plane_offset.setMinimumWidth(_COORD_BOX_MIN_WIDTH)
-        row.addWidget(self._plane_offset, 1)
+        # No offset box. A plane goes through the origin, or through an atom
+        # picked in the view; a figure in units of d(hkl) was a third way of
+        # saying where that nobody asked for.
         self._family_check = QCheckBox("Whole family")
         self._family_check.setToolTip(
             "Draw every plane of the family across the cell on screen, d(hkl) apart"
         )
-        row.addWidget(self._family_check)
-        box.addLayout(row)
+        box.addWidget(self._family_check)
 
+        # Where along the normal that plane goes: through the origin, or through
+        # an atom picked in the view. Both draw the indices typed above — the
+        # names say which point the plane is made to pass through, since that is
+        # the only thing that differs between them.
         row = QHBoxLayout()
-        self._add_plane_btn = QPushButton("Add plane")
-        self._add_plane_btn.setToolTip("Draw (hkl) at the position typed")
+        self._add_plane_btn = QPushButton("Through origin")
+        self._add_plane_btn.setToolTip("Draw the plane (hkl) typed above, through the origin")
         self._add_plane_btn.clicked.connect(self._add_typed_plane)
         row.addWidget(self._add_plane_btn, 1)
         self._plane_atom_btn = QPushButton("Through selected atom")
-        self._plane_atom_btn.setToolTip("Draw (hkl) through the one atom selected")
+        self._plane_atom_btn.setToolTip(
+            "Draw the same plane (hkl) shifted along its normal until it passes "
+            "through the one atom selected — the way to a plane that is not the "
+            "one through the origin"
+        )
         self._plane_atom_btn.clicked.connect(self._add_plane_through_atom)
         row.addWidget(self._plane_atom_btn, 1)
         box.addLayout(row)
 
-        # The other way to a plane: from atoms rather than from indices. Kept as
-        # fitted — a molecule's plane is seldom a lattice plane, and snapping it
-        # to the nearest one would tilt it off the atoms — and the row names the
-        # (hkl) it is closest to.
+        # The other way in, and not a variation on the first: a plane through
+        # atoms that need not be a lattice plane at all. Kept as fitted — a
+        # molecule's plane seldom is one, and snapping it to the nearest would
+        # tilt it off the atoms — and the row names the (hkl) it is closest to.
+        box.addWidget(_heading("Or fitted to atoms"))
         self._fit_plane_btn = QPushButton("Fit to selected atoms")
         self._fit_plane_btn.setToolTip(
             "Least-squares plane through 3 or more selected atoms, drawn exactly as "
@@ -335,21 +331,27 @@ class GeometryPanel(QWidget):
         self._plane_list.itemSelectionChanged.connect(self._sync_buttons)
         box.addWidget(self._plane_list, 1)
 
+        # Three, acting on what is listed above them: colour it, remove it, or
+        # start again. The atom-driven actions sit with the other ways in.
         row = QHBoxLayout()
         self._plane_colour_btn = QPushButton("Colour…")
         self._plane_colour_btn.setToolTip("Set the colour of the selected plane(s)")
         self._plane_colour_btn.clicked.connect(self._set_plane_colour)
-        row.addWidget(self._plane_colour_btn)
-        self._plane_select_btn = QPushButton("Select atoms")
-        self._plane_select_btn.setToolTip("Select the atoms lying on the selected plane(s)")
-        self._plane_select_btn.clicked.connect(self._select_plane_atoms)
-        row.addWidget(self._plane_select_btn)
+        row.addWidget(self._plane_colour_btn, 1)
         self._plane_remove_btn = QPushButton("Remove")
         self._plane_remove_btn.setToolTip("Remove the selected plane(s)")
         self._plane_remove_btn.clicked.connect(self._remove_selected_planes)
-        row.addWidget(self._plane_remove_btn)
-        row.addStretch(1)
+        row.addWidget(self._plane_remove_btn, 1)
+        self._plane_clear_btn = QPushButton("Clear all")
+        self._plane_clear_btn.setToolTip("Remove every plane drawn")
+        self._plane_clear_btn.clicked.connect(self._clear_planes)
+        row.addWidget(self._plane_clear_btn, 1)
         box.addLayout(row)
+
+        self._plane_select_btn = QPushButton("Select the atoms on it")
+        self._plane_select_btn.setToolTip("Select the atoms lying on the selected plane(s)")
+        self._plane_select_btn.clicked.connect(self._select_plane_atoms)
+        box.addWidget(self._plane_select_btn)
 
         # How see-through the sheets are: a plane that reads well over a sparse
         # cell can hide a dense one, or vanish against the background. Live, like
@@ -365,6 +367,21 @@ class GeometryPanel(QWidget):
                                       self._plane_opacity)
         )
         box.addLayout(_labelled("Opacity", self._plane_opacity))
+
+        # Where the plane sits along its own normal, in units of d(hkl): 0 is the
+        # plane through the origin and 1 is its next neighbour, so one sweep of
+        # this covers every distinct plane of the family. Live, like the opacity
+        # above it — a plane is placed by eye against the atoms far more often
+        # than it is calculated.
+        self._plane_offset = SliderBox(0.0, 0.0, 1.0, 0.01)
+        self._plane_offset.setToolTip(
+            "Position of the selected plane(s) — of every plane when none is "
+            "selected — along the normal, in units of d(hkl). 0 and 1 are "
+            "neighbouring planes of the family; 0.5 lies halfway between them."
+        )
+        self._plane_offset.changed.connect(self._set_plane_offset)
+        self._plane_list.itemSelectionChanged.connect(self._show_plane_offset)
+        box.addLayout(_labelled("Position (d)", self._plane_offset))
         return group
 
     def _build_atoms_group(self) -> QWidget:
@@ -743,20 +760,17 @@ class GeometryPanel(QWidget):
         if miller is None or self._miller_cell is None:
             return
         self.add_lattice_plane(lp.LatticePlane(
-            miller, self._plane_offset.value(), family=self._family_check.isChecked(),
+            miller, 0.0, family=self._family_check.isChecked(),
             opacity=self.plane_opacity(),
         ))
 
     def _add_plane_through_atom(self) -> None:
-        """(hkl) through the selected atom; the position box shows where that is."""
+        """(hkl) through the selected atom, wherever along the normal that is."""
         miller = self._typed_miller()
         position = self._current_position()
         if miller is None or position is None or self._miller_cell is None:
             return
         offset = round(lp.offset_of(self._miller_cell, miller, position), 6)
-        blocked = self._plane_offset.blockSignals(True)
-        self._plane_offset.setValue(offset)
-        self._plane_offset.blockSignals(blocked)
         self.add_lattice_plane(lp.LatticePlane(
             miller, offset, family=self._family_check.isChecked(),
             opacity=self.plane_opacity(),
@@ -788,12 +802,15 @@ class GeometryPanel(QWidget):
             return f"{lp.label(plane.miller)} (no lattice)"
         name = lp.label(plane.miller, self._miller_cell)
         d = lp.spacing(self._miller_cell, plane.miller)
+        # Where along the normal it sits, in the units the Position slider moves
+        # it in — but only when it is somewhere other than the origin, which is
+        # what "at 0.00 d" announced about every plane added by its indices.
+        parts = [name]
         if plane.family:
-            shift = plane.offset - np.floor(plane.offset)
-            where = "family" if shift < 1e-6 or shift > 1 - 1e-6 else f"family +{shift:.2f} d"
-        else:
-            where = f"at {plane.offset:.2f} d"
-        return f"{name} {where} · d {d:.3f} Å · {atoms}"
+            parts.append("family")
+        elif abs(plane.offset) > 1e-6:
+            parts.append(f"at {plane.offset:.2f} d")
+        return f"{' · '.join(parts)} · d {d:.3f} Å · {atoms}"
 
     def _fitted_summary(self, plane: lp.FittedPlane, atoms: str) -> str:
         """``Fit ≈ (1 2 0) 1.3° · rms 0.012 Å · 8 atoms`` — as long as an (hkl) row.
@@ -821,28 +838,13 @@ class GeometryPanel(QWidget):
         return text
 
     def _sync_plane_form(self) -> None:
-        """Hint, i index and d(hkl) for the indices typed and the cell they are in."""
+        """Point the index boxes at the cell the indices are quoted in."""
         cell = self._miller_cell
         miller = self._typed_miller()
         self._miller.set_cell(cell)
         hexagonal = self._miller.hexagonal
-        if cell is None:
-            self._plane_hint.setText(
-                "A molecule has no lattice planes, but a plane can be fitted to its atoms."
-                if len(self._structure)
-                else "Open a crystal to draw its lattice planes."
-            )
-        else:
-            a, b, c = (float(np.linalg.norm(v)) for v in cell)
-            self._plane_hint.setText(
-                f"Conventional cell (h k i l): a {a:.3f}, c {c:.3f} Å" if hexagonal
-                else f"Conventional cell: a {a:.3f}, b {b:.3f}, c {c:.3f} Å"
-            )
-        if cell is None or miller is None:
-            self._spacing_label.setText("d —")
-        else:
-            self._spacing_label.setText(f"d {lp.spacing(cell, miller):.3f} Å")
-        for widget in (self._plane_offset, self._family_check, self._miller):
+        del hexagonal, miller  # the indices speak for themselves now
+        for widget in (self._family_check, self._miller):
             widget.setEnabled(cell is not None)
         self._sync_buttons()
 
@@ -860,6 +862,31 @@ class GeometryPanel(QWidget):
         if self._planes:
             self._emit_planes()
 
+    def _set_plane_offset(self, value: float) -> None:
+        """Slide the selected planes along their normals, or all of them.
+
+        A plane fitted to atoms is left where it is: it is not a member of a
+        family, so there is no d for it to be moved by.
+        """
+        moved = False
+        for row in self._selected_rows(self._plane_list) or range(len(self._planes)):
+            plane = self._planes[row]
+            if isinstance(plane, lp.FittedPlane):
+                continue
+            self._planes[row] = dataclasses.replace(plane, offset=float(value))
+            moved = True
+        if moved:
+            self.refresh_planes()   # the rows say whether a plane is off the origin
+            self._emit_planes()
+
+    def _show_plane_offset(self) -> None:
+        """Show the picked plane's position, and offer the slider only if it has one."""
+        picked = [self._planes[row] for row in self._selected_rows(self._plane_list)]
+        lattice = [p for p in picked if not isinstance(p, lp.FittedPlane)]
+        self._plane_offset.setEnabled(bool(lattice) or not picked)
+        if lattice:
+            self._plane_offset.set_value(lattice[0].offset, notify=False)
+
     def _select_plane_atoms(self) -> None:
         rows = self._selected_rows(self._plane_list)
         on = set()
@@ -867,6 +894,15 @@ class GeometryPanel(QWidget):
             on.update(int(i) for i in self._atoms_on(self._planes[row]))
         if rows:
             self.select_atoms_requested.emit(sorted(on))
+
+    def _clear_planes(self) -> None:
+        """Take every plane off the view, selected or not."""
+        if not self._planes:
+            return
+        self._plane_list.clear()
+        self._planes.clear()
+        self._emit_planes()
+        self._sync_buttons()
 
     def _remove_selected_planes(self) -> None:
         for row in reversed(self._selected_rows(self._plane_list)):
@@ -942,6 +978,8 @@ class GeometryPanel(QWidget):
         self._plane_colour_btn.setEnabled(picked)
         self._plane_select_btn.setEnabled(picked)
         self._plane_remove_btn.setEnabled(picked)
+        # Clear all needs no selection — only something to clear.
+        self._plane_clear_btn.setEnabled(bool(self._planes))
         # Opacity is for planes there are, or will be: none in a molecule until
         # one is fitted.
         self._plane_opacity.setEnabled(self._miller_cell is not None or bool(self._planes))
@@ -957,6 +995,18 @@ class GeometryPanel(QWidget):
         one_atom = self._editing and count == 1
         for spin in self._coord_boxes:
             spin.setEnabled(one_atom)
+
+
+def _heading(text: str) -> QLabel:
+    """A quiet heading over a group of controls, naming what they are one of.
+
+    Two ways to make a plane sat in one unbroken column of buttons, so the
+    second read as a third option belonging to the first. A word above each
+    says they are alternatives.
+    """
+    label = QLabel(text)
+    label.setStyleSheet("color: palette(mid);")
+    return label
 
 
 def _labelled(text: str, control: QWidget) -> QHBoxLayout:

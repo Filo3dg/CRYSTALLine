@@ -44,6 +44,105 @@ def test_the_gap_scales_with_the_marker():
 
 
 # ── what the side panel shows ─────────────────────────────────────────────
+# ── a polymer's zone: a segment, not a solid ──────────────────────────────
+def test_a_two_point_zone_is_recognised_as_a_chain():
+    """What tells the picture it is drawing a line: everything about a segment
+    is drawn differently from a solid or a polygon."""
+    vertices = np.array([[-0.2, 0.0, 0.0], [0.2, 0.0, 0.0]])
+    assert np.allclose(zone_picker._segment_direction(vertices), [1.0, 0.0, 0.0])
+
+    # A polygon and a solid are not segments, and neither is a zone of no length.
+    assert zone_picker._segment_direction(np.eye(3)) is None
+    assert zone_picker._segment_direction(np.zeros((2, 3))) is None
+
+
+def test_a_chain_is_given_an_up_direction_square_to_it():
+    """A line has no up of its own, and the labels and the camera both need one."""
+    for chain in (np.array([1.0, 0, 0]), np.array([0, 0, 1.0]),
+                  np.array([1.0, 1.0, 0]) / np.sqrt(2), np.array([0.3, -0.5, 0.81])):
+        chain = chain / np.linalg.norm(chain)
+        up = zone_picker._perpendicular_to(chain)
+        assert pytest.approx(1.0) == float(np.linalg.norm(up))
+        assert abs(float(np.dot(up, chain))) < 1e-9   # square to it, whatever it is
+
+
+def test_a_chains_labels_go_above_the_bar_not_along_it():
+    """Outward from Γ on a segment is along the segment, where the axis arrow
+    and the next label already are."""
+    class _Dialog:
+        _chain = np.array([1.0, 0.0, 0.0])
+        _flat_normal = None
+        _label_direction = zone_picker.ZonePickerDialog._label_direction
+
+    direction = _Dialog()._label_direction(np.array([0.2, 0.0, 0.0]))
+    assert abs(float(np.dot(direction, _Dialog._chain))) < 1e-9
+
+    class _Solid(_Dialog):
+        _chain = None
+
+    centre = np.array([0.2, 0.1, 0.0])
+    assert np.allclose(_Solid()._label_direction(centre), zone_picker._outward(centre))
+
+
+# ── a slab's zone: a polygon, seen square on ──────────────────────────────
+def test_a_flat_zone_is_looked_at_from_a_fixed_side():
+    """Which way ``_plane_normal`` points falls out of the winding of the zone's
+    corners, so without this the same slab could open seen from above or from
+    below depending on the lattice it came from."""
+    for normal in (np.array([0.0, 0, 1.0]), np.array([0.0, 0, -1.0])):
+        assert np.allclose(zone_picker._facing(normal), [0, 0, 1])
+    for normal in (np.array([0.0, 1.0, 0]), np.array([0.0, -1.0, 0])):
+        assert np.allclose(zone_picker._facing(normal), [0, 1, 0])
+
+
+def test_a_slab_in_the_xy_plane_comes_up_the_familiar_way_round():
+    """k_y up and k_x to the right, as a zone diagram prints it — not on its side."""
+    up = zone_picker._upright_in(np.array([0.0, 0, 1.0]))
+
+    assert np.allclose(up, [0, 1, 0])
+    # And whatever the plane, "up" lies in it.
+    for normal in (np.array([1.0, 0, 0]), np.array([1.0, 1.0, 1.0]) / np.sqrt(3)):
+        up = zone_picker._upright_in(normal)
+        assert pytest.approx(1.0) == float(np.linalg.norm(up))
+        assert abs(float(np.dot(up, normal))) < 1e-9
+
+
+def test_gammas_label_leaves_the_plane_it_is_now_seen_in():
+    """Γ's fallback direction points at the viewer, which was fine from a corner
+    and invisible once a flat zone is looked at square on — the label sat on top
+    of the marker it names. It goes up the plane instead, and off the two axes
+    drawn out of Γ."""
+    class _Flat:
+        _chain = None
+        _flat_normal = np.array([0.0, 0, 1.0])
+        _label_direction = zone_picker.ZonePickerDialog._label_direction
+
+    direction = _Flat()._label_direction(np.zeros(3))
+
+    assert abs(float(np.dot(direction, _Flat._flat_normal))) < 1e-9   # in the plane
+    assert direction[0] < 0 and direction[1] > 0                      # up and left of both axes
+    # A point that is not Γ still has its own outward direction.
+    corner = np.array([0.3, 0.2, 0.0])
+    assert np.allclose(_Flat()._label_direction(corner), zone_picker._outward(corner))
+
+
+def test_only_a_3d_crystal_has_a_second_cell_to_be_drawn_in():
+    """A slab's symmetry is a layer group and a chain's a rod group: neither has
+    a Bravais lattice to offer a primitive-versus-conventional choice of."""
+    from ase import Atoms
+
+    from crystalline.core.structure import Structure
+
+    def built(pbc):
+        return Structure.from_ase(Atoms("C", positions=[[0, 0, 0]],
+                                        cell=[[2.5, 0, 0], [0, 2.5, 0], [0, 0, 2.5]],
+                                        pbc=pbc))
+
+    assert zone_picker._is_crystal(built([True, True, True]))
+    assert not zone_picker._is_crystal(built([True, True, False]))   # slab
+    assert not zone_picker._is_crystal(built([True, False, False]))  # polymer
+
+
 def test_a_coordinate_is_shown_as_the_fraction_it_is():
     """0.333 reads as an approximation of something; 1/3 reads as the thing.
 
@@ -108,16 +207,21 @@ def test_a_typed_gamma_is_understood_as_the_stored_label():
 
 
 # ── how labels are written into the scene ─────────────────────────────────
-def test_gamma_is_written_as_mathtext_because_the_font_has_no_greek():
+def test_gamma_is_written_as_a_gamma_in_a_font_that_has_one():
     """VTK's built-in font draws a missing glyph as *nothing*, so a bare "Γ"
-    label rendered blank and the point looked unlabelled. MathText has Greek."""
-    assert zone_picker._math_label("G") == r"$\Gamma$"
-    assert zone_picker._math_label("X") == "$X$"
-    assert zone_picker._math_label("X_1") == "$X_1$"
+    rendered blank and the point looked unlabelled. The letter is kept and the
+    billboard is given a font that has it — see
+    ``test_a_billboard_label_is_drawn_in_a_font_that_has_greek``."""
+    assert zone_picker._math_label("G") == "Γ"
+    assert zone_picker._math_label("X") == "X"
+    assert zone_picker._math_label("X_1") == "X₁"
 
 
 def test_a_greek_named_point_keeps_its_letter_and_its_index():
-    assert zone_picker._math_label("Sigma_1") == r"$\Sigma_1$"
+    """The letter is the point's name; the index distinguishes it from its
+    siblings. Both survive as Unicode, the index as a real subscript — those
+    are the digits, which the label font has."""
+    assert zone_picker._math_label("Sigma_1") == "Σ₁"
 
 
 def test_a_label_mathtext_could_not_set_falls_back_to_plain_text():
@@ -125,13 +229,52 @@ def test_a_label_mathtext_could_not_set_falls_back_to_plain_text():
     assert zone_picker._math_label("X'") == "X'"
 
 
-def test_the_axes_are_labelled_with_real_subscripts():
-    """k_x, not kx: the axis of a reciprocal-space figure is a subscripted k."""
+def test_the_axes_are_labelled_through_the_same_path_as_the_points():
+    """They were written out as MathText literals, so they stayed ``$k_x$`` on a
+    machine where the points had already fallen back to plain letters. Going
+    through the same drawing as the points is also what gives them their
+    subscripts."""
     import inspect
 
     source = inspect.getsource(zone_picker.ZonePickerDialog._draw_axes)
-    for axis in ("$k_x$", "$k_y$", "$k_z$"):
-        assert axis in source
+    for axis in ("k_x", "k_y", "k_z"):
+        assert f'"{axis}"' in source
+    assert "_draw_label(" in source
+    assert "$k_x$" not in source
+
+
+# ── subscripts ────────────────────────────────────────────────────────────
+def test_a_digit_subscript_is_one_string_and_a_letter_is_two():
+    """Unicode has ₀–₉ and the label font draws them, so an index needs no
+    second actor. It has a ₓ and no ᵧ or ᵶ, so k_y and k_z do."""
+    assert zone_picker._label_parts("Sigma_1") == ("Σ₁", "")
+    assert zone_picker._label_parts("X") == ("X", "")
+    for axis, letter in (("k_x", "x"), ("k_y", "y"), ("k_z", "z")):
+        assert zone_picker._label_parts(axis) == ("k", letter)
+
+
+def test_the_subscript_is_placed_in_pixels_after_the_base():
+    """``SetDisplayOffset`` is applied after projection, so the two actors keep
+    their arrangement at every zoom and from every angle — a second label
+    anchored in the scene would drift apart from the first as the view moved.
+    The offset is the width the base is actually drawn at, measured for the
+    screen's own DPI: guessing from the character count puts the subscript
+    inside the letter or out in space."""
+    import inspect
+
+    source = inspect.getsource(zone_picker._draw_label)
+    assert "_text_width(base, size, dpi)" in source
+    assert "_dpi_of(plotter)" in source
+    assert "SetDisplayOffset" in inspect.getsource(zone_picker._billboard)
+
+    # Wider text, further along — whatever the font turns out to be.
+    narrow = zone_picker._text_width("k", 14, 144)
+    wide = zone_picker._text_width("kkk", 14, 144)
+    assert 0 < narrow < wide
+    assert zone_picker._text_width("", 14, 144) == 0
+    # And it is measured in the pixels the glyphs are drawn in: twice the DPI,
+    # twice the width, which is what keeps a HiDPI screen right.
+    assert zone_picker._text_width("k", 14, 144) > zone_picker._text_width("k", 14, 72)
 
 
 # ── the path's colours ────────────────────────────────────────────────────
@@ -489,3 +632,49 @@ def test_a_redraw_marks_the_camera_as_placed():
     import inspect
 
     assert "camera_set = True" in inspect.getsource(zone_picker.ZonePickerDialog._draw)
+
+
+# ── labels when MathText is not working ─────────────────────────────────
+
+def test_a_label_falls_back_to_plain_unicode_when_mathtext_cannot_draw_it():
+    """Reported from a running app: every label showed as ``$\\Gamma$``, dollar
+    signs and all.
+
+    The labels are built as MathText because VTK's own font has no Greek. But
+    registering that backend is not the same as it working — where VTK and
+    matplotlib disagree about their internals the string is drawn verbatim — and
+    the picker had no way to tell. It now asks VTK to rasterise one glyph and
+    uses plain Unicode when that fails, which the billboard draws in a font that
+    has the letter.
+    """
+    from crystalline.ui.panels import zone_picker as zp
+
+    assert zp._plain_label("G") == "Γ"
+    assert zp._plain_label("Sigma") == "Σ"
+    assert zp._plain_label("k_x") == "kx"      # as one string; drawn as two actors
+    assert zp._math_label("G") == "Γ"          # and that is what gets drawn
+    assert zp._plain_label("X") == "X"
+    assert "$" not in zp._plain_label("Gamma")
+
+
+def test_no_label_is_ever_handed_to_vtk_as_mathtext():
+    """MathText is how VTK draws Greek through matplotlib, and where the two
+    disagree the label is drawn verbatim — ``$\\Gamma$``, dollar signs and all,
+    as reported from a running app. Nothing on this side predicts which machine
+    does which, so the 3D labels do not use it at all."""
+    from crystalline.ui.panels import zone_picker as zp
+
+    for label in ("G", "Gamma", "Sigma", "Delta", "Lambda", "X", "k_x", "W_2"):
+        drawn = zp._math_label(label)
+        assert "$" not in drawn and "\\" not in drawn, (label, drawn)
+
+
+def test_a_billboard_label_is_drawn_in_a_font_that_has_greek():
+    """Whatever the label says, the actor must be able to draw it: VTK's own
+    font renders a gamma as nothing at all."""
+    import inspect
+
+    from crystalline.ui.panels import zone_picker as zp
+
+    source = inspect.getsource(zp._billboard)
+    assert "SetFontFile" in source and "unicode_font()" in source
