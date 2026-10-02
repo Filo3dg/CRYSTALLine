@@ -8,6 +8,8 @@ is: build a panel, dock it, connect its signals here.
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 from contextlib import contextmanager
 from typing import Optional, Sequence
 
@@ -2954,8 +2956,18 @@ class MainWindow(QMainWindow):
 
         GIF needs no extra packages; a PNG filename writes a numbered frame
         sequence; MP4 needs imageio-ffmpeg (a clear message says so if missing).
-        Rendered off-screen so the live view is untouched, reusing the current
-        appearance and camera.
+
+        Drawn by the view on screen, supersampled, rather than by an off-screen
+        plotter of its own. A second VTK render window beside the live one is
+        what killed the app: every frame came out, the file was written, and the
+        first draw afterwards faulted in C++ — no traceback, no crash report,
+        because by then the damage was in the OpenGL state the two had shared.
+        An image export, which does everything else an export does and only this
+        differently, has never done it.
+
+        So the view really does animate while this runs, and is put back where
+        it stood when it is over. The frames are the view's own shape, which is
+        also what the picture on screen promises.
         """
         selection = self.phonon_panel.current_selection()
         if selection is None:
@@ -2972,11 +2984,10 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        equilibrium, mode = selection
         from crystalline.viz.export import (
             MOVIE_EXTS,
             VIDEO_MISSING_MESSAGE,
-            render_animation_frames,
+            frames_from_view,
             save_animation,
             video_export_available,
         )
@@ -2989,34 +3000,93 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Video export unavailable", VIDEO_MISSING_MESSAGE)
             return
 
+        # Rendered straight into the writer, one frame at a time, with the event
+        # loop pumped between them. Three things have to be true at once and
+        # only this arrangement has all three.
+        #
+        # Nothing may be held: 240 frames at 1920x1440 is two gigabytes, and the
+        # GIF writer then copied every one — six and a half gigabytes, which the
+        # system answers by killing the process, leaving nothing behind to say
+        # so. That was the crash.
+        #
+        # Rendering is VTK's work and VTK's is the main thread's, so it cannot
+        # be moved off; and staging the frames to files to free the thread is
+        # slower than the export it was meant to unblock — writing two gigabytes
+        # costs 243 ms a frame where encoding one costs 150.
+        #
+        # So the loop stays here and gives the window its turns, excluding user
+        # input: the spinner turns, the message counts the frames, the window
+        # repaints and the system sees an app that is answering — but nothing
+        # the user clicks can re-enter an export that is halfway through.
+        # Nothing else may be driving the live view while this runs. The loop
+        # below gives the window its turns, and a mode left playing would take
+        # one of them to redraw the view it is animating — a second VTK render
+        # window drawing in the middle of the off-screen one's frame.
+        self.phonon_panel.stop()
+        self._trace(f"export: {n_frames} frames at {window_size} -> {path}")
+        standing_at = self.phonon_panel.current_phase()
+        self._busy.start(f"Exporting {n_frames} frames…")
         try:
-            frames = render_animation_frames(
-                self.structure,
-                equilibrium,
-                mode,
-                self.viewport.renderer.settings,
-                amplitude=self.animator.amplitude,
-                n_frames=n_frames,
-                reference_cell=self._unit_cell,
-                bond_structure=self._bond_structure,
-                camera=self.viewport.camera_state,  # placement + zoom (parallel scale)
-                window_size=window_size,
+            written = save_animation(
+                frames_from_view(
+                    self.viewport.interactor, self.animator,
+                    n_frames=n_frames, size=window_size, on_frame=self._exporting_frame,
+                ),
+                path, fps=fps,
             )
-            written = save_animation(frames, path, fps=fps)
         except Exception as exc:  # noqa: BLE001 - surface encode/write errors clearly
+            self._trace(f"export: failed: {exc}")
             QMessageBox.critical(self, "Export failed", f"Could not save the animation:\n{exc}")
             return
+        finally:
+            self._trace("export: written; putting the view back")
+            self.phonon_panel.show_phase(standing_at)   # where the mode was standing
+            self._busy.stop()
+        self._trace("export: done, back to the event loop")
         if len(written) > 1:
             QMessageBox.information(
                 self, "Animation exported", f"Wrote {len(written)} frames next to\n{written[0]}"
             )
 
-    def _ask_animation_options(self):
-        """Prompt for ``(ext, filter_label, window_size, n_frames, fps)`` or ``None``.
+    @staticmethod
+    def _trace(message: str) -> None:
+        """Say where the app has got to, when it is asked to.
 
-        Resolution sets the off-screen render size; frames control the smoothness
-        of one vibration cycle; FPS the playback speed. A PNG target writes a
-        numbered frame sequence rather than a single file.
+        Set ``CRYSTALLINE_TRACE=1`` and these go to stderr, which the launcher
+        keeps in ~/Library/Logs/CRYSTALLine.log. For a crash that takes the
+        process down without raising — a fault in VTK or Qt, which leaves no
+        traceback and no crash report — the last line printed is the evidence:
+        it says which step was running when the process died. That is how the
+        export crash was found, after everything else had come back empty.
+        """
+        import os
+        import sys
+
+        if os.environ.get("CRYSTALLINE_TRACE"):
+            print(f"[trace] {message}", file=sys.stderr, flush=True)
+
+    def _exporting_frame(self, done: int, total: int) -> None:
+        """Show how far an export has got, and let the window answer for itself.
+
+        ``ExcludeUserInputEvents`` is the whole safety of it: paints, timers and
+        the window server's own messages are delivered — so the app repaints and
+        is not marked unresponsive — while clicks and keys wait in the queue
+        until the export is over and cannot start a second one on top of it.
+        """
+        from PySide6.QtCore import QEventLoop
+        from PySide6.QtWidgets import QApplication
+
+        if done in (1, total):
+            self._trace(f"export: frame {done} of {total}")
+        self._busy.pulse(f"Frame {done} of {total}…")
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
+    def _ask_animation_options(self):
+        """Prompt for ``(ext, filter_label, size, n_frames, fps)`` or ``None``.
+
+        The size is the animation's, which the frames are fitted to; frames
+        control the smoothness of one vibration cycle; FPS the playback speed.
+        A PNG target writes a numbered frame sequence rather than a single file.
         """
         from crystalline.viz.export import (
             DEFAULT_FPS,
@@ -3038,11 +3108,20 @@ class MainWindow(QMainWindow):
             ("png", "PNG frame sequence", True),
             ("jpg", "JPEG frame sequence", True),
         ]
+        # Sizes, as before — the frames are drawn by the view on screen, but they
+        # are fitted to whichever of these is chosen rather than coming out the
+        # shape the window happens to be. A view with docks either side of it is
+        # taller than it is wide, and a portrait animation is letterboxed in
+        # black by every viewer there is.
+        from crystalline.viz.export import _window_size
+
+        view = _window_size(self.viewport.interactor)
         resolutions = [
             ("640 × 480", (640, 480)),
             ("800 × 600", (800, 600)),
             ("1280 × 960", (1280, 960)),
             ("1920 × 1440", (1920, 1440)),
+            (f"The view, {view[0]} × {view[1]}", view),
         ]
         dialog = QDialog(self)
         dialog.setWindowTitle("Export phonon animation")

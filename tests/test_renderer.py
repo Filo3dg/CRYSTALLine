@@ -22,6 +22,55 @@ def _outline_extent(renderer):
     return lo[:, 1] - lo[:, 0]
 
 
+def test_a_held_view_draws_nothing_until_it_is_let_go():
+    """What an animation export needs: a second VTK render window draws the
+    frames, and the two must not draw at once — interleaved, they corrupt the
+    state the live one shares, and the next draw after the export segfaults in
+    C++, with nothing in Python to catch.
+
+    Against a stand-in: a real Viewport needs a GL context, and building one
+    here takes the whole test session down with it.
+    """
+    import inspect
+
+    from crystalline.ui.viewport import Viewport
+
+    class _Interactor:
+        def __init__(self):
+            self.updates = True
+
+        def setUpdatesEnabled(self, on):
+            self.updates = bool(on)
+
+        def updatesEnabled(self):
+            return self.updates
+
+        def isVisible(self):
+            return False          # nothing to schedule on the way out
+
+    class _View:
+        held = Viewport.held
+        _draw_held = Viewport._draw_held
+
+        def __init__(self):
+            self.interactor = _Interactor()
+            self._suspended = False
+            self._render_held = False
+
+    view = _View()
+    with view.held():
+        assert view._suspended                        # renders asked for are held
+        assert not view.interactor.updatesEnabled()   # and so are Qt's own repaints
+
+    assert not view._suspended
+    assert view.interactor.updatesEnabled()
+    assert view._render_held                          # what was asked for is still owed
+
+    # And the render request itself honours it — that is the half a stub cannot
+    # reach, since the hook is made in __init__.
+    assert "if self._suspended:" in inspect.getsource(Viewport.__init__)
+
+
 def test_reference_cell_outlines_original_not_supercell():
     base = bulk("NaCl", "rocksalt", a=5.64)
     supercell = Structure.from_ase(base.repeat((2, 2, 1)))
