@@ -377,7 +377,8 @@ class MainWindow(QMainWindow):
         file it has read. Everything is built as the current tab, the same way
         and in the same order as when there was only ever one.
         """
-        if not tab.built():
+        new = not tab.built()
+        if new:
             with self._acting_on(tab):
                 self._build_tab_widgets(tab)
         pending = tab.pending
@@ -385,12 +386,27 @@ class MainWindow(QMainWindow):
             tab.pending = None
             with self._acting_on(tab):
                 self._fill_tab(tab, *pending)
+        if new:
+            # Shown already, if the tab is being looked at (see
+            # _build_tab_widgets); drawn now, with its file in it, before the
+            # window next reaches the screen — not a turn later, after a
+            # frame of white.
+            tab.viewport.draw_now()
 
     def _build_tab_widgets(self, tab: FileTab) -> None:
         """One tab's 3D view and panels, wired to each other and to the window."""
         # The 3D view, inside the tab's page, and the phonon panel driving it.
         self.viewport = Viewport(tab.page)
         tab.page.layout().addWidget(self.viewport)
+        if tab.page.isVisible():
+            # The tab is being looked at, and Qt would show the view on the next
+            # turn of the event loop: the window would reach the screen once
+            # with a bare page where the view goes. And everything below would
+            # be framed in a view that is not on screen yet, at a default size
+            # it never has — a tall view got the framing of a wide one, and the
+            # cell ran off both sides. Shown now, the page's layout gives it its
+            # real size on the way; _realise_tab draws it once its file is in.
+            self.viewport.show()
         if tab.start_settings is not None:
             self.viewport.renderer.set_settings(tab.start_settings)
         self.animator = PhononAnimator(self.viewport.renderer)
