@@ -551,6 +551,23 @@ def test_a_hidden_view_is_not_drawn_into():
     assert "self._render_held = True" in inspect.getsource(inspect.unwrap(Viewport._draw_queued))
 
 
+def test_no_view_is_redrawn_on_a_timer():
+    """pyvistaqt redraws a view five times a second unless told not to, by a
+    timer holding the interactor's own render — taken before the viewport
+    replaces it, so it went round the hold above and drew into hidden tabs
+    too. With three files open, fifteen draws a second of nothing new.
+
+    Checked on the source, as above.
+    """
+    import inspect
+
+    from crystalline.ui.panels.zone_picker import _ZoneView
+    from crystalline.ui.viewport import Viewport
+
+    assert "QtInteractor(self, auto_update=False)" in inspect.getsource(Viewport.__init__)
+    assert "QtInteractor(self, auto_update=False)" in inspect.getsource(_ZoneView.__init__)
+
+
 def _drawing_stub(monkeypatch):
     """The viewport's drawing machinery on a plain QObject, with a plain widget
     for its VTK window: a real ``Viewport`` cannot be built here."""

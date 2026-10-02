@@ -71,7 +71,14 @@ class Viewport(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.interactor = QtInteractor(self)
+        # Not redrawn on a timer. pyvistaqt's default redraws every view five
+        # times a second, whether anything changed or not and whether the view
+        # is on screen or not: with several files open, every tab's scene was
+        # drawn over and over behind the one being looked at — and drawn into
+        # while hidden, which the hold below exists to prevent. Its timer holds
+        # the interactor's own render, taken before it is replaced below, so it
+        # went round that too. Everything that changes the scene asks for a draw.
+        self.interactor = QtInteractor(self, auto_update=False)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.interactor)
