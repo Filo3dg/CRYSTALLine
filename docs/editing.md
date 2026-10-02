@@ -83,9 +83,12 @@ on screen; hexagonal and trigonal crystals are written with four indices
 (*h k i l*), *i* = −(*h* + *k*) following from the other two.
 
 The plane is placed either at a **position** along its normal, in units of the
-interplanar spacing *d*(hkl) from the plane through the origin — 0 and 1 are
-neighbouring planes, 0.5 lies halfway between — or **through the selected
-atom**. **Whole family** draws every plane of the family across the cell on
+interplanar spacing *d*(hkl) from the plane through the origin — from −1 to 1:
+0 is the plane through the origin, 1 and −1 its neighbours on either side, 0.5
+lies halfway to the next one — or **through the selected atom**. Negative
+positions matter for a plane with a negative index, such as (1 −1 0) or
+(−1 0 0): the cell lies partly or wholly on the negative side of the plane
+through the origin, and a plane is drawn only where it cuts the cell. **Whole family** draws every plane of the family across the cell on
 screen, *d*(hkl) apart. Each plane is drawn where it cuts the displayed cell
 (for a slab, the layer and 1 Å either side of it) and is listed with *d*(hkl)
 and the number of atoms lying on it, within 0.15 Å — the same test that marks
