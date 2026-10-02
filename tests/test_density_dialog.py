@@ -226,8 +226,15 @@ class _StubWindow(QWidget):
         super().__init__()
         from PySide6.QtGui import QAction
 
+        from crystalline.ui.file_tabs import FileTab
+
         self._output_path = str(folder / "run.out")
+        # The tab the window is acting on, which is what says there is a file to
+        # look beside at all — see test_the_field_entry_waits_for_the_file.
+        self._tab = FileTab()
+        self._tab.path = self._output_path
         self._density_shown = False
+        self._density_action = QAction("Electron density & potential…", self)
         self._clear_density_action = QAction("Clear field", self)
         self._messages = []
         self.drawn = []
@@ -315,6 +322,85 @@ def test_opening_another_file_takes_the_previous_field_off_the_view():
 
     assert "self._clear_density()" in source
     assert source.index("self._clear_density()") < source.index("self._source = result.structure")
+
+
+def test_the_grids_are_looked_for_beside_whatever_file_is_open(qapp, folder, monkeypatch):
+    """A geometry (.cif, .gui, fort.34) has no output path, and the folder was
+    taken from that — so a CUBE sitting next to the very file on screen was not
+    offered, and the dialog opened on nothing at all."""
+    from PySide6.QtWidgets import QDialog
+
+    from crystalline.ui.panels import density_dialog
+
+    seen = {}
+
+    class _Spy(density_dialog.DensityDialog):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            seen["folder"] = kwargs.get("folder")
+
+        def exec(self):
+            return QDialog.Rejected
+
+    monkeypatch.setattr(density_dialog, "DensityDialog", _Spy)
+    window = _StubWindow(folder)
+    window._output_path = None                       # as a geometry file leaves it
+    window._tab.path = str(folder / "mgo.cif")
+
+    window._open_density()
+
+    assert seen["folder"] == str(folder)
+
+
+def test_the_field_entry_waits_for_the_file_it_looks_beside(qapp):
+    """The grids sit beside the file the tab was opened from, so with no file
+    there is nowhere to look and the dialog opened on no folder, listing
+    nothing. Reading a file no longer holds the window still, which is what
+    made that reachable: the menus are live while the file is on its way.
+    """
+    from crystalline.ui.main_window import MainWindow
+    from crystalline.ui.file_tabs import FileTab
+
+    class _Action:
+        def __init__(self):
+            self.enabled, self.tip = True, ""
+
+        def setEnabled(self, on):
+            self.enabled = bool(on)
+
+        def setToolTip(self, text):
+            self.tip = text
+
+    class _Window:
+        _update_density_actions = MainWindow._update_density_actions
+
+        def __init__(self):
+            self._tab = FileTab()
+            self._density_action = _Action()
+            self._clear_density_action = _Action()
+            self._density_shown = False
+
+    window = _Window()
+    window._update_density_actions()
+    assert not window._density_action.enabled          # still being read, or nothing open
+    assert "Open a file first" in window._density_action.tip
+
+    window._tab.path = "/runs/urea.out"
+    window._update_density_actions()
+    assert window._density_action.enabled
+    assert "ECH3" in window._density_action.tip
+    assert not window._clear_density_action.enabled    # nothing drawn yet
+
+    # A geometry keeps it: it has no output to look beside, but the dialog can
+    # still be pointed somewhere by hand.
+    window._tab.path = "/runs/urea.cif"
+    window._update_density_actions()
+    assert window._density_action.enabled
+
+    # And the window asks as the file goes in, not only on a change of tab.
+    import inspect
+
+    assert "_update_density_actions()" in inspect.getsource(MainWindow._fill_tab)
 
 
 def test_a_cleared_field_stays_cleared_through_a_rebuild(qapp):

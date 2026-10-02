@@ -1233,7 +1233,12 @@ class MainWindow(QMainWindow):
                 structure = self._analysis_cell()
             except Exception:  # noqa: BLE001 - naming the corners is a nicety
                 structure = None
-        folder = str(Path(self._output_path).parent) if self._output_path else ""
+        # Beside the file this tab was opened from, whatever kind it is. Taking
+        # it from the *output* path left a geometry (.cif, .gui, fort.34) with
+        # nowhere to look — the dialog opened on no folder and offered nothing,
+        # with the grids sitting next to the very file on screen.
+        opened = self._output_path or (self._tab.path if self._tab is not None else None)
+        folder = str(Path(opened).parent) if opened else ""
         # The run's own files are told apart by the Fermi level they record,
         # not by being named after the output.
         try:
@@ -1599,12 +1604,17 @@ class MainWindow(QMainWindow):
         ``done`` receives the result back on the UI thread, which is where any
         drawing has to happen: VTK and Qt widgets belong to the thread that made
         them, so only the computation moves.
+
+        It receives it for the tab the work was started in, whichever tab is on
+        screen by then (:meth:`_routed`). The tab bar is disabled meanwhile, but
+        that only stops the *user* moving: a file read in behind the work brings
+        its own tab to the front when it is ready, and without this the orbital
+        or the plot would be drawn into that newly opened file instead.
         """
         self._busy.start(message)
+        started_in = self._tab
         worker = Worker(work)
         self._workers.append(worker)  # held: a dropped worker takes its thread down
-        # The result goes to the widgets of the tab on screen now: that tab has
-        # to still be the one on screen when it arrives.
         self._file_tabs.tabBar().setEnabled(False)
 
         def cleanup() -> None:
@@ -1618,7 +1628,8 @@ class MainWindow(QMainWindow):
             cleanup()
             QMessageBox.critical(self, failed_title, str(exc))
 
-        worker.finished.connect(lambda result: (cleanup(), done(result)))
+        deliver = self._routed(started_in, done)
+        worker.finished.connect(lambda result: (cleanup(), deliver(result)))
         worker.failed.connect(on_failed)
         worker.start()
 
@@ -1709,7 +1720,12 @@ class MainWindow(QMainWindow):
         from crystalline.crystalio import density
         from crystalline.ui.panels.density_dialog import DensityDialog
 
-        folder = str(Path(self._output_path).parent) if self._output_path else ""
+        # Beside the file this tab was opened from, whatever kind it is. Taking
+        # it from the *output* path left a geometry (.cif, .gui, fort.34) with
+        # nowhere to look — the dialog opened on no folder and offered nothing,
+        # with the grids sitting next to the very file on screen.
+        opened = self._output_path or (self._tab.path if self._tab is not None else None)
+        folder = str(Path(opened).parent) if opened else ""
         miller_cell = self._conventional_cell()
         source = getattr(self, "_source", None)
         cell = (np.asarray(source.cell, dtype=float)
@@ -1788,7 +1804,27 @@ class MainWindow(QMainWindow):
         self._update_density_actions()
 
     def _update_density_actions(self) -> None:
-        """Enable the Clear entry only while something is drawn."""
+        """Enable the field entry once the tab holds a file, Clear while one is drawn.
+
+        The grids sit beside the file the tab was opened from, so without one
+        there is nowhere to look: the dialog opened on no folder and listed
+        nothing. That was only reachable while the window was reading — which it
+        now does in the background, leaving every menu live over a tab whose
+        file has not arrived yet, where opening a file used to hold the whole
+        window still. Every other entry that needs the file is already enabled
+        from what was read; this one is enabled by there being a file at all,
+        so a geometry (.cif, .gui) keeps it and its Browse button.
+        """
+        tab = self._tab
+        field = getattr(self, "_density_action", None)
+        if field is not None:
+            ready = tab is not None and bool(tab.path)
+            field.setEnabled(ready)
+            field.setToolTip(
+                "Draw a charge density, a spin density or an electrostatic potential "
+                "from a PROPERTIES run with ECH3 or POT3" if ready else
+                "Open a file first: the grids are looked for beside it"
+            )
         clear = getattr(self, "_clear_density_action", None)
         if clear is not None:
             clear.setEnabled(bool(getattr(self, "_density_shown", False)))
@@ -2707,6 +2743,7 @@ class MainWindow(QMainWindow):
         self._update_adp_controls(autoshow=True)
         self._update_info(read.output_props)
         self._update_plot_actions()  # enable only the plots this file supports
+        self._update_density_actions()  # the grids are looked for beside this file
         self._update_orbital_actions()  # and the orbitals, if the run wrote any
         self._update_spectra_action()
         self._update_vci_action()

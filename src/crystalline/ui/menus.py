@@ -574,6 +574,9 @@ def _build_plot_menu(window) -> None:
         "Draw a charge density, a spin density or an electrostatic potential "
         "from a PROPERTIES run with ECH3 or POT3"
     )
+    # Nothing is open yet, so there is no folder to look for grids in; the
+    # window enables it as soon as a tab holds a file.
+    window._density_action.setEnabled(False)
     window._density_action.triggered.connect(window._open_density)
     plot_menu.addAction(window._density_action)
 

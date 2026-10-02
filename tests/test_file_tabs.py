@@ -338,6 +338,69 @@ def test_a_tab_opened_beside_others_is_built_only_when_it_is_looked_at(qapp):
     assert third.built()                                  # and the third, when visited
 
 
+def test_a_background_result_lands_in_the_tab_it_was_started_in(qapp, monkeypatch):
+    """A plot or an orbital is built off the main thread, and the tab bar is
+    disabled meanwhile — but that only stops the *user* moving. A file read in
+    behind the work brings its own tab to the front when it is ready, and the
+    result would then be drawn into that newly opened file: its atoms, its
+    renderer, its panels.
+    """
+    from crystalline.ui import main_window as mw
+
+    class _Signal:
+        def __init__(self):
+            self._slots = []
+
+        def connect(self, slot):
+            self._slots.append(slot)
+
+        def emit(self, value):
+            for slot in list(self._slots):
+                slot(value)
+
+    class _Worker:
+        made = []
+
+        def __init__(self, work):
+            self.work, self.finished, self.failed = work, _Signal(), _Signal()
+            _Worker.made.append(self)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(mw, "Worker", _Worker)
+
+    class _Window:
+        _run_busy = MainWindow._run_busy
+        _routed = MainWindow._routed
+        _acting_on = MainWindow._acting_on
+
+        def __init__(self):
+            self.first, self.second = FileTab(), FileTab()
+            self._tabs = [self.first, self.second]
+            self._tab = self.first
+            self._workers = []
+            self._busy = type("B", (), {"start": lambda *a: None, "stop": lambda *a: None})()
+            self._file_tabs = type(
+                "T", (), {"tabBar": lambda *a: type("B", (), {"setEnabled": lambda *a: None})()}
+            )()
+
+        def _refresh_chrome(self):
+            pass
+
+    window = _Window()
+    drawn = []
+    window._run_busy(lambda: "the orbital", "Building…",
+                     lambda result: drawn.append((result, window._tab)), "Orbital unavailable")
+
+    window._tab = window.second          # a file read in behind arrives and takes the screen
+    _Worker.made[-1].finished.emit("the orbital")
+
+    assert drawn == [("the orbital", window.first)]   # drawn into the tab it was built for
+    assert window._tab is window.second               # and the screen is left where it was
+    assert window._workers == []                      # the worker is let go either way
+
+
 def test_closing_a_tab_nobody_looked_at_lets_its_file_go(qapp):
     """It has no widgets to take down — and the file it is holding must not stay."""
     window = _Window()
