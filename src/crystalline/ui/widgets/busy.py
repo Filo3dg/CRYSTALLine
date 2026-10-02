@@ -64,7 +64,7 @@ class BusyOverlay(ParentOverlay):
 
     def stop(self) -> None:
         self._timer.stop()
-        self.setVisible(False)
+        self._take_down()  # not merely hidden: see ParentOverlay._take_down
 
     def _advance(self) -> None:
         self._angle = (self._angle + _DEGREES_PER_TICK) % 360
