@@ -77,7 +77,7 @@ def test_the_builder_starts_on_the_cell_it_is_given_and_writes_it(qapp):
     dialog = InputBuilderDialog(_p21n(), cell_choice=COMPUTED)
     lines = dialog._preview.toPlainText().splitlines()
     assert lines[2:4] == ["1 0 0", "P 1 21/N 1"]
-    assert dialog._cell_note.text() == "Cell as computed: P2₁/n (No. 14)."
+    assert dialog._cell_note.text() == "Cell as in the file: P2₁/n (No. 14)."
 
     dialog._cell.setCurrentIndex(dialog._cell.findData(STANDARD))
     lines = dialog._preview.toPlainText().splitlines()

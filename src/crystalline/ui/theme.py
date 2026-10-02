@@ -282,6 +282,15 @@ def stylesheet(palette: Palette) -> str:
         selection-background-color: {p.accent};
         selection-color: #ffffff;
         outline: none;
+        padding: 3px;
+    }}
+    /* Without a height and some padding the popup draws its entries hard against
+       each other and against the frame, which reads as a rendering fault rather
+       than a list — and a styled combo box gets no native popup to fall back on. */
+    QComboBox QAbstractItemView::item {{
+        min-height: 22px;
+        padding: 0px 6px;
+        border-radius: {_RADIUS_SMALL}px;
     }}
 
     /* ── checkboxes ───────────────────────────────────────────────────── */
@@ -379,49 +388,51 @@ def stylesheet(palette: Palette) -> str:
     }}
 
     /* ── tabs ─────────────────────────────────────────────────────────────
-       Two different things share this class and must not share a style:
+       One tab everywhere: a filled, rounded pill, borderless, that says which
+       page is showing by being filled rather than by leaning on the page.
 
-       * a QTabWidget's tabs sit *above* their pane, so they lean on it — top
-         corners rounded, bottom edge merged into the page below;
-       * a QMainWindow's dock tabs sit *below* their dock. Given the same style
-         they come out upside down: rounded at the top and merging downwards
-         into a status bar they have nothing to do with, which is exactly what
-         made them look broken.
+       The alternative — the classic tab that merges into the pane below it —
+       needs a rule under the whole bar for the tab to break, and that rule is
+       then drawn everywhere the tab is *not*, which is read as a broken line.
+       It also has an up and a down about it, so a QMainWindow's dock tabs,
+       which Qt puts *below* their dock, came out upside down: rounded at the
+       top and merging downwards into a status bar they have nothing to do
+       with. A pill reads the same wherever the bar is put, so the file tabs,
+       a dialog's tabs and the dock tabs are one control with one look.
 
-       So the dock tabs get a shape with no up or down about it — a filled pill,
-       tinted with the accent when selected. It reads the same wherever Qt
-       decides to put the bar. */
+       The page below carries no frame of its own either. A box around it would
+       be a second edge inside a dialog that already has one, and it only ever
+       showed up in half the dialogs anyway — ``setDocumentMode`` drops it, and
+       two of the three tab widgets set it. The tab says which page is showing;
+       the page does not need to be fenced off to be read. */
     QTabWidget::pane {{
         background: {p.surface};
-        border: 1px solid {p.border};
-        border-radius: {_RADIUS_SMALL}px;
-        top: -1px;
+        border: none;
+        top: 0px;
     }}
+    /* No base line under the bar. Qt draws one in the palette's own colours —
+       white on the dark theme — across the bar *except* under the selected tab,
+       which is the broken line in person: a rule with a gap in it where the tab
+       is. Nothing leans on it here, so it is simply not drawn. */
+    QTabWidget > QTabBar {{ qproperty-drawBase: 0; }}
     QTabWidget > QTabBar::tab {{
         background: transparent;
         color: {p.text_muted};
-        padding: 6px 14px;
-        margin-right: 2px;
-        border: 1px solid transparent;
-        border-top-left-radius: {_RADIUS_SMALL}px;
-        border-top-right-radius: {_RADIUS_SMALL}px;
+        border: none;
+        border-radius: {_RADIUS_SMALL}px;
+        margin: 3px 2px 3px 0px;
+        padding: 5px 12px;
     }}
     QTabWidget > QTabBar::tab:selected {{
         background: {p.surface};
         color: {p.text};
-        border-color: {p.border};
-        border-bottom-color: {p.surface};
-    }}
-    QTabWidget > QTabBar::tab:hover:!selected {{ color: {p.text}; }}
-    /* The open files' tabs sit centred over the 3D view, as the toolbar's view
-       controls do above it — not pushed into the corner by the Info panel. */
-    QTabWidget#fileTabs::tab-bar {{ alignment: center; }}
-    QTabWidget#fileTabs::pane {{
         border: none;
-        border-top: 1px solid {p.border};
-        border-radius: 0px;
-        top: -1px;
     }}
+    QTabWidget > QTabBar::tab:hover:!selected {{ background: {p.track}; color: {p.text}; }}
+    /* The open files' tabs start at the left edge of the view, where a tab bar
+       is read from — the first file opened is the leftmost tab, and a new one
+       extends the row rightwards instead of shifting every tab already there. */
+    QTabWidget#fileTabs::tab-bar {{ alignment: left; }}
     QTabBar::close-button {{
         image: url("{close}");
         background: transparent;
@@ -437,7 +448,10 @@ def stylesheet(palette: Palette) -> str:
         background: {p.border};
     }}
 
-    /* dock tabs */
+    /* Dock tabs. A second selector for the same tab: these are not inside a
+       QTabWidget, so the rules above cannot reach them, and the declarations
+       are kept in step with them by hand. Only the bar differs — it is chrome,
+       not a page — so it says so and draws no base line under itself. */
     QMainWindow > QTabBar {{
         background: {p.chrome};
         qproperty-drawBase: 0;
@@ -447,13 +461,12 @@ def stylesheet(palette: Palette) -> str:
         color: {p.text_muted};
         border: none;
         border-radius: {_RADIUS_SMALL}px;
-        padding: 6px 14px;
-        margin: 4px 2px;
-        font-weight: 600;
+        margin: 3px 2px 3px 0px;
+        padding: 5px 12px;
     }}
     QMainWindow > QTabBar::tab:selected {{
-        background: {p.accent_soft};
-        color: {p.accent};
+        background: {p.surface};
+        color: {p.text};
     }}
     QMainWindow > QTabBar::tab:hover:!selected {{
         background: {p.track};

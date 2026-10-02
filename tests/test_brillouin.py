@@ -233,6 +233,25 @@ def _polymer(repeat: float = 2.6) -> Structure:
     ))
 
 
+def test_a_polymer_keeps_its_own_cell_instead_of_being_standardised():
+    """The zone the dialog draws is the zone of ``zone_lattice``'s answer, and a
+    3D standardiser has no idea what a chain is: it reads the 500 Å CRYSTAL
+    writes across one as two lattice vectors and hands back a fully periodic
+    tetragonal cell, 500 x 500 x a. What was drawn was that cell's zone — a
+    needle along the wrong axis, labelled with points (M, A, Z, R) a chain does
+    not have — and the repeat came back halved into the bargain.
+    """
+    polymer = _polymer()
+    for setting in (PRIMITIVE, CONVENTIONAL):
+        lattice = zone_lattice(polymer, setting)
+
+        assert np.allclose(np.asarray(lattice.cell), np.asarray(polymer.cell))
+        assert list(lattice.pbc) == [True, False, False]
+        vertices, faces = brillouin_zone(lattice)
+        assert len(vertices) == 2 and faces == [[0, 1]]   # a segment, as above
+        assert set(special_points(lattice)) == {"G", "X"}
+
+
 def test_a_polymers_zone_is_a_segment_not_a_needle():
     """Built from all three vectors, a polymer's zone came out as a box a
     five-hundredth of an inverse ångström thick — the width of the vacuum

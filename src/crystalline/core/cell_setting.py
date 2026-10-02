@@ -8,9 +8,13 @@ only one of them is the cell the calculation was run in.
 
 The app offers both views, as :data:`COMPUTED` and :data:`STANDARD`:
 
-* **as computed** — the cell exactly as it is held, in whichever setting of its
-  group that cell is. :func:`find_setting` recognises it by asking spglib,
+* **as in the file** — the cell exactly as it is held, in whichever setting of
+  its group that cell is. :func:`find_setting` recognises it by asking spglib,
   setting by setting, which one describes the cell with no change of basis.
+  (The key is ``"computed"``, from when the app only ever opened CRYSTAL
+  output and the cell on screen was always a computed one. A CIF is not, and
+  neither is an edited structure, so the label names where the cell came from
+  rather than what was done to it.)
 * **standard** — pymatgen's conventional standard cell, which is what the app
   used to report everywhere.
 
@@ -48,7 +52,7 @@ from crystalline.core.structure import Structure
 COMPUTED = "computed"
 STANDARD = "standard"
 CELL_CHOICES: Tuple[Tuple[str, str], ...] = (
-    (COMPUTED, "As computed"),
+    (COMPUTED, "As in the file"),
     (STANDARD, "Standard setting"),
 )
 DEFAULT_CHOICE = COMPUTED
@@ -57,7 +61,7 @@ _SUBSCRIPTS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
 
 
 def choice_label(choice: str) -> str:
-    """``"As computed"`` / ``"Standard setting"`` for a stored choice."""
+    """``"As in the file"`` / ``"Standard setting"`` for a stored choice."""
     return dict(CELL_CHOICES).get(choice, choice)
 
 

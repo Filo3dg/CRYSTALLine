@@ -153,6 +153,7 @@ class _Window(QMainWindow):
     _close_tab_at = MainWindow._close_tab_at
     _close_current_tab = MainWindow._close_current_tab
     _take_tab_for_file = MainWindow._take_tab_for_file
+    _realise_tab = MainWindow._realise_tab
     _tab_for_page = MainWindow._tab_for_page
     _on_file_tab_changed = MainWindow._on_file_tab_changed
     _on_plot_dock_visibility = MainWindow._on_plot_dock_visibility
@@ -172,7 +173,9 @@ class _Window(QMainWindow):
         self._editing = False
         self._workers = []
         self.chrome = 0
-        self.made = []
+        self.made = []          # every tab created
+        self.built = []         # every tab whose widgets were actually built
+        self.installed = []     # every (tab, path) put into widgets
         self._file_tabs = QTabWidget(self)
         self._file_tabs.setTabsClosable(True)
         self.setCentralWidget(self._file_tabs)
@@ -186,15 +189,26 @@ class _Window(QMainWindow):
         self._add_tab()
 
     def _create_tab(self, structure=None, settings=None):
+        """State and a page, as the window's own does — no widgets yet."""
         tab = FileTab()
+        tab.page = QWidget(self._file_tabs)
+        tab.start_settings = settings
         tab._source = structure if structure is not None else Structure.empty()
         tab.structure = tab._source
+        self.made.append((tab, settings))
+        return tab
+
+    def _build_tab_widgets(self, tab):
         for name in file_tabs.PER_TAB_WIDGETS:
             setattr(tab, name, _Part(name))
         for name, stack in self._panel_stacks.items():
             stack.addWidget(getattr(tab, name))
-        self.made.append((tab, settings))
-        return tab
+        self.built.append(tab)
+
+    def _show_file(self, tab, path, result):
+        """What ``_load_path`` does once the file is read and its tab is on screen."""
+        self.installed.append((tab, path))
+        self._update_tab_labels()
 
     def _refresh_chrome(self):
         self.chrome += 1
@@ -203,11 +217,15 @@ class _Window(QMainWindow):
     def _follow_theme_background(self):
         pass
 
-    def open(self, path):
+    def open(self, path, show=True):
         """What ``_load_path`` does with tabs, without reading anything."""
-        tab = self._take_tab_for_file()
+        tab = self._take_tab_for_file(show=show)
         tab.path = path
-        self._update_tab_labels()
+        if tab is not self._tab:
+            tab.pending = (path, None)
+            self._update_tab_labels()
+            return tab
+        self._show_file(tab, path, None)
         return tab
 
 
@@ -236,7 +254,7 @@ def test_each_further_file_opens_in_a_tab_of_its_own_and_is_shown(qapp):
     # and every dock shows the new tab's panel
     for name, stack in window._panel_stacks.items():
         assert stack.currentWidget() is getattr(ice, name)
-    assert window._file_tabs.currentWidget() is ice.viewport
+    assert window._file_tabs.currentWidget() is ice.page
 
 
 def test_switching_tab_shows_that_tabs_panels_and_stops_the_other_animation(qapp):
@@ -284,6 +302,106 @@ def test_plots_come_and_go_with_their_tab(qapp):
     window._file_tabs.setCurrentIndex(0)
     assert window._plot_dock.isHidden() and not urea.plots_open
     assert not ice.plots_open
+
+
+def test_the_output_rows_follow_the_structure_rather_than_holding_it_up(qapp):
+    """Reading what a CRYSTAL output says about itself is a second pass over the
+    whole file — 150 ms of a 1.4 MB one, and worse as it grows — so the
+    crystallography is shown at once and those rows arrive a turn later."""
+    from crystalline.ui.main_window import MainWindow
+
+    class _Panel:
+        def __init__(self):
+            self.shown = []
+
+        def show_structure(self, _structure, props=None):
+            self.shown.append(props)
+
+    class _W:
+        _update_info = MainWindow._update_info
+        _read_output_props = MainWindow._read_output_props
+        _routed = MainWindow._routed
+        _acting_on = MainWindow._acting_on
+
+        def __init__(self, path):
+            self._tab = FileTab()
+            self._tab.path = path
+            self._tabs = [self._tab]
+            self.info_panel = _Panel()
+            self._output_props = None
+
+        def _analysis_cell(self):
+            return Structure.empty()
+
+        def _refresh_chrome(self):
+            pass
+
+    rows = {"Total energy (eV)": "-1.000000"}
+    import crystalline.crystalio as crystalio
+
+    original = crystalio.output_properties
+    crystalio.output_properties = lambda _path: dict(rows)
+    try:
+        window = _W("/runs/urea.out")
+        window._update_info("/runs/urea.out")
+        assert window.info_panel.shown == [{}]      # the structure, with no rows yet
+        assert window._output_props == {}
+        qapp.processEvents()
+        assert window.info_panel.shown[-1] == rows  # and the rows, a turn later
+        assert window._output_props == rows
+
+        # A tab that took another file in the meantime keeps its own rows.
+        window = _W("/runs/urea.out")
+        window._update_info("/runs/urea.out")
+        window._tab.path = "/runs/ice.out"
+        qapp.processEvents()
+        assert window.info_panel.shown == [{}]
+        assert window._output_props == {}
+    finally:
+        crystalio.output_properties = original
+
+
+def test_a_tab_opened_beside_others_is_built_only_when_it_is_looked_at(qapp):
+    """Opening ten files should cost one 3D view, not ten.
+
+    Each file is still read as it is opened — one that will not read opens no
+    tab — but a tab nobody has switched to keeps the file in hand and builds
+    nothing until it is clicked.
+    """
+    window = _Window()
+    first = window.open("/runs/urea.out")                 # takes the blank tab, on screen
+    waiting = window.open("/runs/ice.out", show=False)
+    shown = window.open("/runs/mgo.out")
+
+    assert window._tab is shown
+    assert window.built == [first, shown]                 # ice's view was never made
+    assert not waiting.built() and waiting.pending is not None
+    assert _titles(window) == ["urea.out", "ice.out", "mgo.out"]  # named all the same
+
+    window._file_tabs.setCurrentIndex(1)                  # a click on the waiting tab
+    assert waiting.built() and window.built[-1] is waiting
+    assert window.installed[-1] == (waiting, "/runs/ice.out")
+    assert waiting.pending is None                        # and not installed twice
+    for name, stack in window._panel_stacks.items():
+        assert stack.currentWidget() is getattr(waiting, name)
+
+    window._file_tabs.setCurrentIndex(2)
+    window._file_tabs.setCurrentIndex(1)
+    assert window.built.count(waiting) == 1               # built once, not on every visit
+
+
+def test_closing_a_tab_nobody_looked_at_lets_its_file_go(qapp):
+    """It has no widgets to take down — and the file it is holding must not stay."""
+    window = _Window()
+    urea = window.open("/runs/urea.out")
+    waiting = window.open("/runs/ice.out", show=False)
+
+    window._close_tab(waiting)
+
+    assert window._tabs == [urea] and window._tab is urea
+    assert _titles(window) == ["urea.out"]
+    assert waiting.pending is None
+    assert not waiting.built()
 
 
 def test_closing_a_tab_lets_its_file_go(qapp):
@@ -393,11 +511,14 @@ def test_a_hidden_view_is_not_drawn_into():
     assert "self._render_held" in inspect.getsource(inspect.unwrap(Viewport.eventFilter))
 
 
-def test_the_file_tabs_sit_centred_over_the_view():
+def test_the_file_tabs_start_at_the_left_of_the_view():
+    """Where a row of tabs is read from. Centred, every tab shifted sideways
+    each time a file was opened or closed, and the first file no longer sat
+    where it had been put."""
     import inspect
 
     from crystalline.ui import theme
 
     for palette in (theme.LIGHT, theme.DARK):
-        assert "QTabWidget#fileTabs::tab-bar { alignment: center; }" in theme.stylesheet(palette)
+        assert "QTabWidget#fileTabs::tab-bar { alignment: left; }" in theme.stylesheet(palette)
     assert 'self._file_tabs.setObjectName("fileTabs")' in inspect.getsource(MainWindow.__init__)

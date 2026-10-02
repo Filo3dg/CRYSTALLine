@@ -68,17 +68,20 @@ def _window():
         dragMoveEvent = MainWindow.dragMoveEvent
         dropEvent = MainWindow.dropEvent
         _handle_drop = MainWindow._handle_drop
+        _load_paths = MainWindow._load_paths
         _dropped_files = MainWindow._dropped_files
         _dropped_paths = staticmethod(MainWindow._dropped_paths)
 
         def __init__(self):
             self._drop_hint = _Hint()
             self.opened = []
+            self.shown = []       # whether each file was switched to as it opened
             self.imported = []
             self.messages = []
 
-        def _load_path(self, path):
+        def _load_path(self, path, show=True):
             self.opened.append(path)
+            self.shown.append(show)
             return True
 
         def _import_path(self, path):
@@ -216,6 +219,9 @@ def test_dropping_several_files_opens_every_one_and_says_what_was_left(qapp):
     qapp.processEvents()
 
     assert window.opened == ["/tmp/run.out", "/tmp/other.cif"]
+    # Only the tab left on screen is built as the drop is handled; the others
+    # wait in their tabs until they are clicked.
+    assert window.shown == [False, True]
     assert len(window.messages) == 1
     assert "Opened 2 files — 1 other dropped file ignored" in window.messages[0]
 
@@ -316,3 +322,33 @@ def test_the_hint_ignores_the_pointer(qapp):
 
     assert hint.testAttribute(Qt.WA_TransparentForMouseEvents)
     assert not hint.acceptDrops()
+
+
+def test_the_drop_hint_covers_the_view_and_not_the_tabs(qapp):
+    """The hint hangs on the tab widget, so the plain overlay rectangle reached
+    up over the tab bar and hid which file was open at the moment the pointer
+    was over the window.
+
+    A tab widget keeps its pages inside a stack of its own, so a page's geometry
+    is given in *that* stack's coordinates — taken as it stands it reads as
+    starting at the top of the window, which is how this looked right and was
+    not.
+    """
+    from PySide6.QtWidgets import QTabWidget, QWidget
+
+    from crystalline.ui.widgets import DropHint
+
+    tabs = QTabWidget()
+    tabs.addTab(QWidget(), "one.out")
+    tabs.addTab(QWidget(), "two.out")
+    tabs.resize(640, 260)
+    tabs.show()
+    qapp.processEvents()
+
+    hint = DropHint(tabs)
+    hint.show_hint("Open one.out", "CRYSTAL output")
+
+    bar = tabs.tabBar().height()
+    assert hint.geometry().top() >= bar, "the hint is drawn over the tab bar"
+    assert hint.geometry().height() == tabs.currentWidget().height()
+    tabs.hide()

@@ -175,7 +175,10 @@ def test_the_summary_line_describes_the_selected_mode(qapp):
 
     panel.mode_list.setCurrentRow(1)
     assert "O 100%" in panel.character_label.text()
-    assert "1.0 of 2 atoms move" in panel.character_label.text()
+    # Composition alone: the effective-atom count belongs to the mode's tooltip,
+    # not to the line under the list.
+    assert "atoms move" not in panel.character_label.text()
+    assert "atoms move" in panel.mode_list.item(1).toolTip()
 
     panel.mode_list.setCurrentRow(0)
     assert "C 100%" in panel.character_label.text()

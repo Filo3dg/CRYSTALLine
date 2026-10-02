@@ -21,8 +21,8 @@ Design choices for this first cut (see the module's tests for the exact decks):
 
 * **Geometry is derived, not asked for.** A 3D crystal is written in one of two
   cells (``GeometryOptions.cell_setting``): pymatgen's conventional standard
-  cell, or the cell as computed, in whichever setting of its group that cell is
-  in (P2₁/n stays P2₁/n). Either way the setting is named the way CRYSTAL reads
+  cell, or the cell as it stands, in whichever setting of its group that cell
+  is in (P2₁/n stays P2₁/n). Either way the setting is named the way CRYSTAL reads
   it — by number (``IFLAG=0``) for the standard setting, by its Hermann–Mauguin
   symbol (``IFLAG=1``) otherwise, with ``IFSO`` matching the origin choice the
   coordinates use and ``IFHR`` the rhombohedral axes — and it is only written
@@ -881,12 +881,12 @@ def _crystal_geometry(structure: Structure, opts: GeometryOptions) -> Tuple[List
         written = _setting_body(structure, opts.symprec)
         if written is not None:
             body, setting = written
-            note = f"Cell as computed: {setting.label} (No. {setting.number})"
+            note = f"Cell as in the file: {setting.label} (No. {setting.number})"
             if setting.shifted:
                 shift = ", ".join(f"{v:+.4f}" for v in setting.origin_shift)
                 note += f", origin moved by ({shift}) to the setting's own"
             return body, note + "."
-        fallback = ("The computed cell is not a conventional cell of its space group "
+        fallback = ("The cell on screen is not a conventional cell of its space group "
                     "in a setting CRYSTAL can name, so the standard cell is written. ")
 
     standard = cell_setting.standard_cell(structure, opts.symprec)

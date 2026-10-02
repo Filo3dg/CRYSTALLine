@@ -1,4 +1,4 @@
-"""The two cells a crystal can be reported and written in: as computed, or standard.
+"""The two cells a crystal can be reported and written in: the file's, or standard.
 
 Every deck here is checked the way that matters — rebuilt by
 ``_crystal_reader`` following the CRYSTAL manual's reading of ``IFLAG IFHR
@@ -174,7 +174,7 @@ def test_silicon_is_written_with_the_origin_choice_its_coordinates_use():
 def test_every_setting_rebuilds_in_both_cells(hall):
     structure = _crystal(hall)
     computed = _deck(structure, COMPUTED)
-    assert "as computed" in geometry_note(structure, GeometryOptions(cell_setting=COMPUTED))
+    assert "as in the file" in geometry_note(structure, GeometryOptions(cell_setting=COMPUTED))
     assert same_crystal(computed, *_atoms(structure))
     standard = cell_setting.standard_cell(structure)
     assert same_crystal(_deck(structure, STANDARD), *_atoms(standard))
@@ -192,7 +192,7 @@ def test_a_cell_with_no_setting_falls_back_to_the_standard_one_and_says_so():
 def test_the_note_names_the_setting_written():
     structure = _p21n()
     assert geometry_note(structure, GeometryOptions(cell_setting=COMPUTED)) == \
-        "Cell as computed: P2₁/n (No. 14)."
+        "Cell as in the file: P2₁/n (No. 14)."
     assert geometry_note(structure, GeometryOptions(cell_setting=STANDARD)) == \
         "Standard setting: P2₁/c (No. 14)."
     assert "P1" in geometry_note(structure, GeometryOptions(use_symmetry=False))
