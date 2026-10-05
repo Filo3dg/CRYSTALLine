@@ -20,6 +20,7 @@ committed via ``move_atom``; it's refreshed whenever a new structure is shown.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Optional
 
 import numpy as np
@@ -110,9 +111,13 @@ class Viewport(QWidget):
         # A screenshot is not affected: VTK draws the scene itself to capture it.
         self._render_held = False
         self._render_queued = False
+        self._suspended = False   # held while something else is drawing (see held)
         self._render_now = self.interactor.render
 
         def request_render(*_args, **_kwargs):
+            if self._suspended:
+                self._render_held = True      # held: see Viewport.held
+                return None
             if not self.interactor.isVisible():
                 self._render_held = True
             elif not self._render_queued:
@@ -148,6 +153,40 @@ class Viewport(QWidget):
         # view is (re)entered/refocused. Do NOT do it on plain presses —
         # SetInteractorStyle during the press that starts a drag disrupts it.
         self.interactor.installEventFilter(self)
+
+    @contextmanager
+    def held(self):
+        """Stop this view drawing at all, for as long as the block runs.
+
+        For the one thing that must never happen: another VTK render window
+        drawing while this one does. An animation export renders its frames
+        off-screen beside the live view, and on macOS the two contexts are not
+        independent — interleaving them corrupts the state this one shares, and
+        the next live draw after the export segfaults in C++, with the export
+        itself long finished and nothing in Python to catch.
+
+        Qt's own repaints go too (``setUpdatesEnabled``), not just the renders
+        this class asks for: a paint event is a draw like any other, and the
+        busy overlay painting over the view is enough to provoke one.
+        """
+        self.interactor.setUpdatesEnabled(False)
+        previous, self._suspended = self._suspended, True
+        try:
+            yield
+        finally:
+            self._suspended = previous
+            self.interactor.setUpdatesEnabled(True)
+            # Whatever was asked for meanwhile is drawn once, now.
+            self._render_held = True
+            if self.interactor.isVisible():
+                QTimer.singleShot(0, self._draw_held)
+
+    @guard()
+    def _draw_held(self) -> None:
+        """Draw what was asked for while the view was held."""
+        if self._render_held and self.interactor.isVisible():
+            self._render_held = False
+            self._render_now()
 
     @guard()
     def _draw_queued(self) -> None:

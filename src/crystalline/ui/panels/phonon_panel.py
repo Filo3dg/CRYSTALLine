@@ -494,6 +494,15 @@ class PhononPanel(QWidget):
             return None
         return self._rows[row]
 
+    def current_phase(self) -> float:
+        """Where in the cycle the view is standing, so it can be put back."""
+        return float(self._phase)
+
+    def show_phase(self, phase: float) -> None:
+        """Put the view at ``phase`` of the selected mode, and stand there."""
+        self._phase = float(phase)
+        self._animator.set_frame(self._phase)
+
     def current_selection(self):
         """``(equilibrium, PhononMode)`` for the selected mode, or ``None``."""
         index = self.current_mode_index()

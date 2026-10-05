@@ -66,6 +66,25 @@ class BusyOverlay(ParentOverlay):
         self._timer.stop()
         self._take_down()  # not merely hidden: see ParentOverlay._take_down
 
+    def pulse(self, message: Optional[str] = None) -> None:
+        """Advance the spinner and paint it *now*, for work that cannot yield.
+
+        The timer above only turns the arc when the event loop gets a turn, and
+        some work does not give it one: rendering a frame is VTK's, and VTK's is
+        the main thread's. A caller that cannot be moved off it calls this
+        between pieces of work instead, and the indicator keeps moving.
+
+        ``repaint`` rather than ``update``: this paints inside the call, where
+        ``update`` only asks for a paint the blocked loop would never deliver.
+        It also processes no events, so nothing else can run in the middle of
+        the work — which is the point. An overlay that stops is read as an app
+        that has died, and that is exactly what a long export looked like.
+        """
+        if message is not None:
+            self._message = message
+        self._advance()
+        self.repaint()
+
     def _advance(self) -> None:
         self._angle = (self._angle + _DEGREES_PER_TICK) % 360
         self.update()

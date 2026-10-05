@@ -36,9 +36,34 @@ def main(argv=None) -> int:
 
         return report()
 
+    _leave_a_trace_on_a_native_crash()
+
     from crystalline.app import run
 
     return run()
+
+
+def _leave_a_trace_on_a_native_crash() -> None:
+    """Make a crash that is not a Python error leave something behind.
+
+    A fault in VTK, Qt or a C extension kills the process without raising, so
+    the log the launcher keeps simply ends mid-sentence, with nothing to say
+    where it stopped — which is exactly what a crash during an animation export
+    looked like. ``faulthandler`` prints the Python stack of every thread to
+    stderr when the signal arrives, and the launcher is already sending stderr
+    to ~/Library/Logs/CRYSTALLine.log.
+
+    It covers SIGSEGV, SIGABRT, SIGBUS, SIGFPE and SIGILL. A process the system
+    kills for using too much memory gets SIGKILL, which nothing can catch: the
+    silence itself is then the evidence, which is worth knowing when reading a
+    log that stops without a word.
+    """
+    import faulthandler
+
+    try:
+        faulthandler.enable()
+    except Exception:  # noqa: BLE001 - a stderr it cannot write to is not fatal
+        pass
 
 
 if __name__ == "__main__":

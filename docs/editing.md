@@ -60,12 +60,12 @@ open stay open in every tab and the next time the program is started.
 
 **Measure** measures the current selection:
 
-| Atoms selected | Quantity |
-| --- | --- |
-| 1 | the position of the atom |
-| 2 | a distance |
-| 3 | an angle |
-| 4 | a dihedral angle |
+| Atoms selected | Quantity                 |
+| -------------- | ------------------------ |
+| 1              | the position of the atom |
+| 2              | a distance               |
+| 3              | an angle                 |
+| 4              | a dihedral angle         |
 
 Measurements remain drawn in the view and can be coloured individually or by
 type. The **Thickness** slider sets how thick the lines of distances, angles and
@@ -77,10 +77,9 @@ fitted under **Lattice planes**.
 
 A crystallographic plane is drawn from its Miller indices, with no atoms
 selected, in the **Lattice planes** section of the Geometry panel. The
-indices are quoted in the conventional cell — the one named above the boxes,
-the same as for a density slice — whatever cell, primitive view or supercell is
-on screen; hexagonal and trigonal crystals are written with four indices
-(*h k i l*), *i* = −(*h* + *k*) following from the other two.
+indices are quoted in the conventional cell; hexagonal and trigonal crystals 
+are written with four indices (*h k i l*), *i* = −(*h* + *k*) following from 
+the other two.
 
 The plane is placed either at a **position** along its normal, in units of the
 interplanar spacing *d*(hkl) from the plane through the origin — from −1 to 1:
@@ -99,15 +98,6 @@ opacity new planes are drawn with; at 0 only the outline of a plane is drawn.
 Planes are kept through a change of view or supercell and cleared when another
 file is opened.
 
-**Fit to selected atoms** goes the other way, from atoms to a plane: the
-least-squares plane through three or more selected atoms. It is drawn exactly
-as fitted, across the cell like the planes above, and listed with the (hkl),
-with indices up to 6, whose planes are closest to it in direction, the angle
-between the two, and the root-mean-square distance of the atoms from it (0 for
-atoms that are exactly coplanar): `Fit ≈ (1 2 0) 1.3° · rms 0.012 Å · 8 atoms`.
-The last figure is the number of atoms lying on the plane, as for the others;
-the row's tooltip gives the number fitted. The plane of a molecule is seldom a
-lattice plane, so it is not rounded to one. A fitted plane is coloured, made
-see-through, used to select atoms and removed like any other, but has no
-family. It can be fitted in a molecule too, where it is drawn over the atoms it
-was fitted to.
+**Fit to selected atoms** goes the other way, from atoms to a plane: a fitted plane
+is coloured, made see-through, used to select atoms and removed like any other, but 
+has no family. 
